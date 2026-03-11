@@ -69,6 +69,11 @@ Implementation entrypoint:
 Gemini configuration:
 
 - Set `GEMINI_API_KEY` in environment to enable Gemini intent classification.
+- `API_KEY` is also accepted for compatibility with curl examples.
+- Default model is `gemini-live-2.5-flash-native-audio` (override with `GEMINI_MODEL`).
+- Default endpoint template is Vertex-style:
+  `https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:streamGenerateContent`
+  (override with `GEMINI_API_ENDPOINT_TEMPLATE`).
 - Without an API key, system falls back to keyword intent detection (e.g., "sales", "pricing", "quote").
 
 ## Structure

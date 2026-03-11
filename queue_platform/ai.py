@@ -126,11 +126,19 @@ class GeminiVoiceRouter:
         self,
         *,
         api_key: str | None = None,
-        model: str = "gemini-2.0-flash",
+        model: str | None = None,
         timeout_seconds: float = 8.0,
     ) -> None:
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
-        self.model = model
+        self.api_key = (
+            api_key
+            or os.getenv("GEMINI_API_KEY", "").strip()
+            or os.getenv("API_KEY", "").strip()
+        )
+        self.model = model or os.getenv("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
+        self.endpoint_template = os.getenv(
+            "GEMINI_API_ENDPOINT_TEMPLATE",
+            "https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:streamGenerateContent",
+        )
         self.timeout_seconds = timeout_seconds
         self.greeting = "Hi, this is Callture. How can I help you?"
         self.invalid_option = "Sorry, invalid option."
@@ -260,10 +268,7 @@ class GeminiVoiceRouter:
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"temperature": 0},
         }
-        endpoint = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-            f"?key={self.api_key}"
-        )
+        endpoint = f"{self.endpoint_template.format(model=self.model)}?key={self.api_key}"
         request = Request(
             endpoint,
             data=json.dumps(payload).encode("utf-8"),
@@ -283,13 +288,48 @@ class GeminiVoiceRouter:
         return parsed.get("intent", "invalid")
 
     def _extract_generated_text(self, api_response_body: str) -> str:
+        # streamGenerateContent may return:
+        # - a single JSON object
+        # - a JSON list of chunk objects
+        # - SSE-like "data: {...}" lines
+        # This extractor supports all three.
+        direct_text = self._extract_text_from_json_payload(api_response_body)
+        if direct_text:
+            return direct_text
+
+        parts: list[str] = []
+        for line in api_response_body.splitlines():
+            cleaned = line.strip()
+            if not cleaned.startswith("data:"):
+                continue
+            fragment = cleaned.removeprefix("data:").strip()
+            if not fragment or fragment == "[DONE]":
+                continue
+            piece = self._extract_text_from_json_payload(fragment)
+            if piece:
+                parts.append(piece)
+        return "".join(parts).strip()
+
+    def _extract_text_from_json_payload(self, payload_str: str) -> str:
         try:
-            payload = json.loads(api_response_body)
-            return (
-                payload["candidates"][0]["content"]["parts"][0].get("text", "").strip()
-            )
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            payload = json.loads(payload_str)
+        except json.JSONDecodeError:
             return ""
+
+        chunks = payload if isinstance(payload, list) else [payload]
+        texts: list[str] = []
+        for chunk in chunks:
+            try:
+                candidates = chunk.get("candidates", [])
+                for candidate in candidates:
+                    content = candidate.get("content", {})
+                    for part in content.get("parts", []):
+                        text = part.get("text")
+                        if isinstance(text, str) and text:
+                            texts.append(text)
+            except AttributeError:
+                continue
+        return "".join(texts).strip()
 
     def _parse_intent_payload(self, generated_text: str) -> dict[str, str]:
         if not generated_text:
