@@ -13,6 +13,7 @@ from .models import (
     QueueConfig,
     RoutingStrategy,
 )
+from .queue_functions import QueueFunctions
 from .service import QueueEngine
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "DashboardService",
     "ContactCenterPlatform",
     "QueueEngine",
+    "QueueFunctions",
     "Agent",
     "AgentStatus",
     "Call",

@@ -62,6 +62,7 @@ queue_platform/
   __init__.py
   models.py
   router.py
+  queue_functions.py
   service.py
   dashboard.py
   analytics.py
@@ -73,4 +74,5 @@ demo.py
 ## Notes
 
 - This project is an application-layer reference implementation.
+- Queue-specific behavior is isolated in `QueueFunctions` for easier feature expansion later.
 - Telephony signaling/media execution (e.g., FreeSWITCH ESL event handlers, SIP leg control) should call into `QueueEngine` methods.
