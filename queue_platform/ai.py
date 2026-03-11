@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -140,6 +142,12 @@ class GeminiVoiceRouter:
             "GEMINI_API_ENDPOINT_TEMPLATE",
             "https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:streamGenerateContent",
         )
+        self.live_enabled = self._is_truthy(os.getenv("GEMINI_ENABLE_LIVE_AUDIO", "1"))
+        self.live_api_version = os.getenv("GEMINI_LIVE_API_VERSION", "v1alpha")
+        self.live_chunk_bytes = int(os.getenv("GEMINI_LIVE_CHUNK_BYTES", "4096"))
+        self.live_receive_timeout_seconds = float(os.getenv("GEMINI_LIVE_RECEIVE_TIMEOUT_SECONDS", "10"))
+        self.vertex_project = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+        self.vertex_location = os.getenv("GOOGLE_CLOUD_LOCATION", "").strip()
         self.timeout_seconds = timeout_seconds
         self.greeting = "Hi, this is Callture. How can I help you?"
         self.invalid_option = "Sorry, invalid option."
@@ -223,6 +231,20 @@ class GeminiVoiceRouter:
         audio_bytes: bytes,
         mime_type: str,
     ) -> tuple[str | None, str, bool, str]:
+        if self.live_enabled and self._is_live_model(self.model) and audio_bytes:
+            live_result = self._run_live_audio_intent(audio_bytes=audio_bytes, mime_type=mime_type)
+            if live_result is not None:
+                transcript, intent = live_result
+                if intent in {"sales", "invalid"}:
+                    return (transcript, intent, True, "Gemini Live audio intent classification")
+                if transcript:
+                    return (
+                        transcript,
+                        self._fallback_intent(transcript),
+                        False,
+                        "Gemini Live transcript with fallback intent classification",
+                    )
+
         if self.api_key and audio_bytes:
             transcript, intent = self._gemini_classify_intent(audio_bytes=audio_bytes, mime_type=mime_type)
             if intent in {"sales", "invalid"}:
@@ -230,6 +252,115 @@ class GeminiVoiceRouter:
             if transcript:
                 return (transcript, self._fallback_intent(transcript), False, "Fallback keyword over transcript")
         return (None, "invalid", False, "No Gemini key/audio; default invalid")
+
+    def _run_live_audio_intent(self, *, audio_bytes: bytes, mime_type: str) -> tuple[str | None, str] | None:
+        try:
+            return asyncio.run(
+                self._gemini_live_classify_intent_async(audio_bytes=audio_bytes, mime_type=mime_type)
+            )
+        except RuntimeError:
+            # Defensive: if called from an existing event loop context, run in a worker thread.
+            result_box: dict[str, tuple[str | None, str]] = {}
+            error_box: dict[str, Exception] = {}
+
+            def _runner() -> None:
+                try:
+                    result_box["result"] = asyncio.run(
+                        self._gemini_live_classify_intent_async(
+                            audio_bytes=audio_bytes,
+                            mime_type=mime_type,
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - defensive branch
+                    error_box["error"] = exc
+
+            thread = threading.Thread(target=_runner, daemon=True)
+            thread.start()
+            thread.join(timeout=self.live_receive_timeout_seconds + 2)
+            if thread.is_alive() or error_box:
+                return None
+            return result_box.get("result")
+
+    async def _gemini_live_classify_intent_async(
+        self,
+        *,
+        audio_bytes: bytes,
+        mime_type: str,
+    ) -> tuple[str | None, str]:
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError:
+            return (None, "invalid")
+
+        instruction = (
+            "You are an IVR intent classifier.\n"
+            'Return JSON only: {"intent":"sales|invalid","transcript":"..."}.\n'
+            'Choose "sales" only when the caller is clearly asking for sales.\n'
+            'Otherwise return "invalid".'
+        )
+
+        connect_config = types.LiveConnectConfig(
+            response_modalities=[types.Modality.TEXT],
+            system_instruction=types.Content(parts=[types.Part(text=instruction)]),
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+        )
+
+        if self.vertex_project and self.vertex_location:
+            client = genai.Client(
+                vertexai=True,
+                project=self.vertex_project,
+                location=self.vertex_location,
+            )
+        else:
+            if not self.api_key:
+                return (None, "invalid")
+            client = genai.Client(
+                api_key=self.api_key,
+                http_options={"api_version": self.live_api_version},
+            )
+
+        transcript = ""
+        response_text_chunks: list[str] = []
+
+        async with client.aio.live.connect(model=self.model, config=connect_config) as session:
+            for idx in range(0, len(audio_bytes), max(256, self.live_chunk_bytes)):
+                chunk = audio_bytes[idx : idx + max(256, self.live_chunk_bytes)]
+                await session.send_realtime_input(audio=types.Blob(data=chunk, mime_type=mime_type))
+            await session.send_realtime_input(audio_stream_end=True)
+
+            try:
+                async with asyncio.timeout(self.live_receive_timeout_seconds):
+                    async for message in session.receive():
+                        text = getattr(message, "text", None)
+                        if isinstance(text, str) and text.strip():
+                            response_text_chunks.append(text.strip())
+
+                        server_content = getattr(message, "server_content", None)
+                        if server_content is None:
+                            continue
+
+                        input_tx = getattr(server_content, "input_transcription", None)
+                        if input_tx and getattr(input_tx, "text", None):
+                            transcript = input_tx.text.strip()
+
+                        model_turn = getattr(server_content, "model_turn", None)
+                        if model_turn:
+                            for part in getattr(model_turn, "parts", []) or []:
+                                part_text = getattr(part, "text", None)
+                                if isinstance(part_text, str) and part_text.strip():
+                                    response_text_chunks.append(part_text.strip())
+
+                        if getattr(server_content, "turn_complete", False):
+                            break
+            except TimeoutError:
+                return (transcript or None, "invalid")
+
+        generated_text = " ".join(response_text_chunks).strip()
+        parsed = self._parse_intent_payload(generated_text)
+        parsed_transcript = parsed.get("transcript", "").strip()
+        effective_transcript = transcript or parsed_transcript
+        return (effective_transcript or None, parsed.get("intent", "invalid"))
 
     def _fallback_intent(self, text: str) -> str:
         normalized = text.casefold()
@@ -368,3 +499,9 @@ class GeminiVoiceRouter:
         except json.JSONDecodeError:
             fallback_intent = self._fallback_intent(cleaned)
             return {"intent": fallback_intent, "transcript": cleaned}
+
+    def _is_live_model(self, model_name: str) -> bool:
+        return "live" in model_name.casefold()
+
+    def _is_truthy(self, value: str) -> bool:
+        return value.strip().casefold() in {"1", "true", "yes", "on"}

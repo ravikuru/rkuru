@@ -71,12 +71,24 @@ Gemini configuration:
 - Set `GEMINI_API_KEY` in environment to enable Gemini intent classification.
 - `API_KEY` is also accepted for compatibility with curl examples.
 - Default model is `gemini-live-2.5-flash-native-audio` (override with `GEMINI_MODEL`).
+- Live audio path is enabled by default (`GEMINI_ENABLE_LIVE_AUDIO=1`) and uses the
+  Python GenAI Live SDK (`google-genai`) with `client.aio.live.connect(...)`.
+- Live SDK API version defaults to `v1alpha` (`GEMINI_LIVE_API_VERSION`).
+- Live audio stream chunk size defaults to `4096` bytes (`GEMINI_LIVE_CHUNK_BYTES`).
+- Live receive timeout defaults to `10` seconds (`GEMINI_LIVE_RECEIVE_TIMEOUT_SECONDS`).
+- For Vertex mode, set `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`.
 - If selected model is unsupported by `streamGenerateContent`, router auto-falls back to
   `GEMINI_FALLBACK_MODEL` (default `gemini-2.5-flash-lite`).
 - Default endpoint template is Vertex-style:
   `https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:streamGenerateContent`
   (override with `GEMINI_API_ENDPOINT_TEMPLATE`).
 - Without an API key, system falls back to keyword intent detection (e.g., "sales", "pricing", "quote").
+
+Install dependency for Live audio mode:
+
+```bash
+pip install google-genai
+```
 
 ## Structure
 
