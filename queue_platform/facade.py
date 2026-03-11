@@ -4,7 +4,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
-from .ai import AIRoutingAdvisor
+from .ai import AIRoutingAdvisor, GeminiVoiceRouter
 from .analytics import AnalyticsService
 from .dashboard import DashboardService
 from .models import Agent, Call, QueueConfig
@@ -19,6 +19,7 @@ class ContactCenterPlatform:
         self.dashboard = DashboardService(self.engine)
         self.analytics = AnalyticsService(self.engine)
         self.ai = AIRoutingAdvisor()
+        self.voice_router = GeminiVoiceRouter()
 
     def configure_queue(self, queue_config: QueueConfig) -> None:
         self.engine.add_queue(queue_config)
@@ -73,3 +74,51 @@ class ContactCenterPlatform:
             "suggestion": asdict(suggestion),
             "ranking": ranking,
         }
+
+    def ai_voice_entry(
+        self,
+        *,
+        caller_id: str,
+        destination_number: str,
+        source_ip: str,
+        caller_utterance: str | None = None,
+        caller_audio: bytes | None = None,
+        caller_audio_mime_type: str = "audio/wav",
+    ) -> dict[str, Any]:
+        """
+        Voice IVR entrypoint:
+        - greet with Callture message
+        - classify intent via Gemini (fallback keyword)
+        - route to Sales queue when configured
+        - return invalid option otherwise
+        """
+        if caller_audio:
+            decision = self.voice_router.route_from_audio(
+                audio_bytes=caller_audio,
+                mime_type=caller_audio_mime_type,
+                queues=self.engine.queues,
+            )
+        else:
+            decision = self.voice_router.route_from_text(
+                caller_utterance=caller_utterance or "",
+                queues=self.engine.queues,
+            )
+
+        payload = asdict(decision)
+        if decision.target_queue_number:
+            call = self.ingest_incoming_call(
+                queue_number=decision.target_queue_number,
+                caller_id=caller_id,
+                destination_number=decision.target_queue_number,
+                source_ip=source_ip,
+                metadata={
+                    "ivr_entry": "gemini_voice_router",
+                    "intent": decision.intent,
+                    "original_destination": destination_number,
+                },
+            )
+            payload["enqueued_call_id"] = call.call_id
+            payload["route_status"] = "enqueued"
+        else:
+            payload["route_status"] = "invalid_option"
+        return payload

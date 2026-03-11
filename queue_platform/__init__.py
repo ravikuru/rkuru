@@ -1,6 +1,6 @@
 """Contact-center queue platform reference implementation."""
 
-from .ai import AIRoutingAdvisor
+from .ai import AIRoutingAdvisor, GeminiVoiceRouter, VoiceRouteResult
 from .analytics import AnalyticsService
 from .dashboard import DashboardService
 from .facade import ContactCenterPlatform
@@ -18,6 +18,8 @@ from .service import QueueEngine
 
 __all__ = [
     "AIRoutingAdvisor",
+    "GeminiVoiceRouter",
+    "VoiceRouteResult",
     "AnalyticsService",
     "DashboardService",
     "ContactCenterPlatform",

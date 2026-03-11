@@ -48,12 +48,28 @@ Python reference implementation covering queue routing, dashboard metrics, analy
 - Continuity routing by caller history
 - Real-time load-aware suggestions
 - Proactive intervention messaging hooks
+- Gemini voice entry routing (Sales intent -> Sales queue)
 
 ## Quick start
 
 ```bash
 python3 demo.py
 ```
+
+## Gemini voice entry behavior
+
+- Greeting: `Hi, this is Callture. How can I help you?`
+- If caller intent is `sales`, route to configured queue with name containing `Sales`.
+- Otherwise return: `Sorry, invalid option.`
+
+Implementation entrypoint:
+
+- `ContactCenterPlatform.ai_voice_entry(...)`
+
+Gemini configuration:
+
+- Set `GEMINI_API_KEY` in environment to enable Gemini intent classification.
+- Without an API key, system falls back to keyword intent detection (e.g., "sales", "pricing", "quote").
 
 ## Structure
 

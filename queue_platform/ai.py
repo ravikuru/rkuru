@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
+import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .models import Agent, Call
 
@@ -94,3 +99,213 @@ class AIRoutingAdvisor:
             ranked.append({"agent_id": agent.agent_id, "score": round(score, 2)})
         ranked.sort(key=lambda x: x["score"], reverse=True)
         return ranked
+
+
+@dataclass(slots=True)
+class VoiceRouteResult:
+    greeting: str
+    response_text: str
+    intent: str
+    target_queue_number: str | None
+    target_queue_name: str | None
+    used_gemini: bool
+    reason: str
+    transcript: str | None = None
+
+
+class GeminiVoiceRouter:
+    """
+    Voice-first IVR router:
+    - Greets caller
+    - Uses Gemini to detect intent from utterance/audio
+    - Routes "sales" intent to configured Sales queue
+    - Falls back to "invalid option"
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        model: str = "gemini-2.0-flash",
+        timeout_seconds: float = 8.0,
+    ) -> None:
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.greeting = "Hi, this is Callture. How can I help you?"
+        self.invalid_option = "Sorry, invalid option."
+
+    def route_from_text(self, caller_utterance: str, queues: dict[str, Any]) -> VoiceRouteResult:
+        intent, used_gemini, reason = self._detect_intent_from_text(caller_utterance)
+        return self._build_route_result(
+            intent=intent,
+            queues=queues,
+            used_gemini=used_gemini,
+            reason=reason,
+            transcript=caller_utterance.strip() or None,
+        )
+
+    def route_from_audio(
+        self,
+        audio_bytes: bytes,
+        mime_type: str,
+        queues: dict[str, Any],
+    ) -> VoiceRouteResult:
+        transcript, intent, used_gemini, reason = self._detect_intent_from_audio(audio_bytes, mime_type)
+        return self._build_route_result(
+            intent=intent,
+            queues=queues,
+            used_gemini=used_gemini,
+            reason=reason,
+            transcript=transcript,
+        )
+
+    def _build_route_result(
+        self,
+        *,
+        intent: str,
+        queues: dict[str, Any],
+        used_gemini: bool,
+        reason: str,
+        transcript: str | None,
+    ) -> VoiceRouteResult:
+        if intent == "sales":
+            sales_queue = self._find_sales_queue(queues)
+            if sales_queue is not None:
+                return VoiceRouteResult(
+                    greeting=self.greeting,
+                    response_text="Connecting you to sales.",
+                    intent="sales",
+                    target_queue_number=sales_queue.number,
+                    target_queue_name=sales_queue.name,
+                    used_gemini=used_gemini,
+                    reason=reason,
+                    transcript=transcript,
+                )
+        return VoiceRouteResult(
+            greeting=self.greeting,
+            response_text=self.invalid_option,
+            intent="invalid",
+            target_queue_number=None,
+            target_queue_name=None,
+            used_gemini=used_gemini,
+            reason=reason,
+            transcript=transcript,
+        )
+
+    def _find_sales_queue(self, queues: dict[str, Any]) -> Any | None:
+        for queue in queues.values():
+            if "sales" in queue.name.casefold():
+                return queue
+        return None
+
+    def _detect_intent_from_text(self, caller_utterance: str) -> tuple[str, bool, str]:
+        text = caller_utterance.strip()
+        if not text:
+            return ("invalid", False, "No utterance captured")
+        if self.api_key:
+            intent = self._gemini_classify_intent(text=text)
+            if intent in {"sales", "invalid"}:
+                return (intent, True, "Gemini text intent classification")
+        return (self._fallback_intent(text), False, "Keyword fallback intent classification")
+
+    def _detect_intent_from_audio(
+        self,
+        audio_bytes: bytes,
+        mime_type: str,
+    ) -> tuple[str | None, str, bool, str]:
+        if self.api_key and audio_bytes:
+            transcript, intent = self._gemini_classify_intent(audio_bytes=audio_bytes, mime_type=mime_type)
+            if intent in {"sales", "invalid"}:
+                return (transcript, intent, True, "Gemini audio intent classification")
+            if transcript:
+                return (transcript, self._fallback_intent(transcript), False, "Fallback keyword over transcript")
+        return (None, "invalid", False, "No Gemini key/audio; default invalid")
+
+    def _fallback_intent(self, text: str) -> str:
+        normalized = text.casefold()
+        sales_keywords = ("sales", "buy", "purchase", "pricing", "quote", "order")
+        return "sales" if any(keyword in normalized for keyword in sales_keywords) else "invalid"
+
+    def _gemini_classify_intent(
+        self,
+        *,
+        text: str | None = None,
+        audio_bytes: bytes | None = None,
+        mime_type: str = "audio/wav",
+    ) -> tuple[str | None, str] | str:
+        if not self.api_key:
+            return ("", "invalid") if audio_bytes else "invalid"
+
+        instruction = (
+            "You are an IVR intent classifier.\n"
+            'Return JSON only: {"intent":"sales|invalid","transcript":"..."}.\n'
+            'Choose "sales" only when the caller is clearly asking for sales.\n'
+            'Otherwise return "invalid".'
+        )
+        parts: list[dict[str, Any]] = [{"text": instruction}]
+        if text is not None:
+            parts.append({"text": f"Caller utterance: {text}"})
+        if audio_bytes is not None:
+            parts.append(
+                {
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": base64.b64encode(audio_bytes).decode("ascii"),
+                    }
+                }
+            )
+
+        payload = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"temperature": 0},
+        }
+        endpoint = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+            f"?key={self.api_key}"
+        )
+        request = Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as resp:
+                body = resp.read().decode("utf-8")
+        except (HTTPError, URLError, TimeoutError):
+            return ("", "invalid") if audio_bytes is not None else "invalid"
+
+        generated_text = self._extract_generated_text(body)
+        parsed = self._parse_intent_payload(generated_text)
+        if audio_bytes is not None:
+            return (parsed.get("transcript"), parsed.get("intent", "invalid"))
+        return parsed.get("intent", "invalid")
+
+    def _extract_generated_text(self, api_response_body: str) -> str:
+        try:
+            payload = json.loads(api_response_body)
+            return (
+                payload["candidates"][0]["content"]["parts"][0].get("text", "").strip()
+            )
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            return ""
+
+    def _parse_intent_payload(self, generated_text: str) -> dict[str, str]:
+        if not generated_text:
+            return {"intent": "invalid", "transcript": ""}
+        cleaned = generated_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            cleaned = cleaned.replace("json", "", 1).strip()
+        try:
+            parsed = json.loads(cleaned)
+            intent = str(parsed.get("intent", "invalid")).casefold().strip()
+            transcript = str(parsed.get("transcript", "")).strip()
+            return {
+                "intent": "sales" if intent == "sales" else "invalid",
+                "transcript": transcript,
+            }
+        except json.JSONDecodeError:
+            fallback_intent = self._fallback_intent(cleaned)
+            return {"intent": fallback_intent, "transcript": cleaned}

@@ -65,6 +65,25 @@ def build_demo_platform() -> ContactCenterPlatform:
 def main() -> None:
     platform = build_demo_platform()
 
+    print("\n--- Gemini Voice Entry (Sales) ---")
+    sales_voice_route = platform.ai_voice_entry(
+        caller_id="6475550123",
+        destination_number="4163501959",
+        source_ip="64.34.222.200",
+        caller_utterance="Hi, I need sales please.",
+    )
+    pprint(sales_voice_route)
+    platform.execute_cycle()
+
+    print("\n--- Gemini Voice Entry (Invalid) ---")
+    invalid_voice_route = platform.ai_voice_entry(
+        caller_id="6475550456",
+        destination_number="4163501959",
+        source_ip="69.90.209.10",
+        caller_utterance="I want technical drawings.",
+    )
+    pprint(invalid_voice_route)
+
     call = platform.ingest_incoming_call(
         queue_number="7001",
         caller_id="4163501959",
