@@ -135,6 +135,7 @@ class GeminiVoiceRouter:
             or os.getenv("API_KEY", "").strip()
         )
         self.model = model or os.getenv("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
+        self.fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
         self.endpoint_template = os.getenv(
             "GEMINI_API_ENDPOINT_TEMPLATE",
             "https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:streamGenerateContent",
@@ -268,7 +269,20 @@ class GeminiVoiceRouter:
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"temperature": 0},
         }
-        endpoint = f"{self.endpoint_template.format(model=self.model)}?key={self.api_key}"
+        body = self._call_model(self.model, payload)
+        if body is None and self.fallback_model and self.fallback_model != self.model:
+            body = self._call_model(self.fallback_model, payload)
+        if body is None:
+            return ("", "invalid") if audio_bytes is not None else "invalid"
+
+        generated_text = self._extract_generated_text(body)
+        parsed = self._parse_intent_payload(generated_text)
+        if audio_bytes is not None:
+            return (parsed.get("transcript"), parsed.get("intent", "invalid"))
+        return parsed.get("intent", "invalid")
+
+    def _call_model(self, model: str, payload: dict[str, Any]) -> str | None:
+        endpoint = f"{self.endpoint_template.format(model=model)}?key={self.api_key}"
         request = Request(
             endpoint,
             data=json.dumps(payload).encode("utf-8"),
@@ -277,15 +291,20 @@ class GeminiVoiceRouter:
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as resp:
-                body = resp.read().decode("utf-8")
-        except (HTTPError, URLError, TimeoutError):
-            return ("", "invalid") if audio_bytes is not None else "invalid"
-
-        generated_text = self._extract_generated_text(body)
-        parsed = self._parse_intent_payload(generated_text)
-        if audio_bytes is not None:
-            return (parsed.get("transcript"), parsed.get("intent", "invalid"))
-        return parsed.get("intent", "invalid")
+                return resp.read().decode("utf-8")
+        except (URLError, TimeoutError):
+            return None
+        except HTTPError as exc:
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                error_body = ""
+            if (
+                exc.code == 400
+                and "not supported in the streamGenerateContent API" in error_body
+            ):
+                return None
+            return None
 
     def _extract_generated_text(self, api_response_body: str) -> str:
         # streamGenerateContent may return:

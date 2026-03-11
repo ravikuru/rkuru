@@ -71,6 +71,8 @@ Gemini configuration:
 - Set `GEMINI_API_KEY` in environment to enable Gemini intent classification.
 - `API_KEY` is also accepted for compatibility with curl examples.
 - Default model is `gemini-live-2.5-flash-native-audio` (override with `GEMINI_MODEL`).
+- If selected model is unsupported by `streamGenerateContent`, router auto-falls back to
+  `GEMINI_FALLBACK_MODEL` (default `gemini-2.5-flash-lite`).
 - Default endpoint template is Vertex-style:
   `https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:streamGenerateContent`
   (override with `GEMINI_API_ENDPOINT_TEMPLATE`).
