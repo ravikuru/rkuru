@@ -136,7 +136,7 @@ class GeminiVoiceRouter:
             or os.getenv("GEMINI_API_KEY", "").strip()
             or os.getenv("API_KEY", "").strip()
         )
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
+        self.model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-latest")
         self.fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
         self.endpoint_template = os.getenv(
             "GEMINI_API_ENDPOINT_TEMPLATE",
@@ -300,11 +300,24 @@ class GeminiVoiceRouter:
             'Otherwise return "invalid".'
         )
 
-        connect_config = types.LiveConnectConfig(
-            response_modalities=[types.Modality.TEXT],
-            system_instruction=types.Content(parts=[types.Part(text=instruction)]),
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-        )
+        if self._is_native_audio_model(self.model):
+            connect_config = types.LiveConnectConfig(
+                response_modalities=[types.Modality.AUDIO],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                    )
+                ),
+                system_instruction=types.Content(parts=[types.Part(text=instruction)]),
+                input_audio_transcription=types.AudioTranscriptionConfig(),
+                output_audio_transcription=types.AudioTranscriptionConfig(),
+            )
+        else:
+            connect_config = types.LiveConnectConfig(
+                response_modalities=[types.Modality.TEXT],
+                system_instruction=types.Content(parts=[types.Part(text=instruction)]),
+                input_audio_transcription=types.AudioTranscriptionConfig(),
+            )
 
         if self.vertex_project and self.vertex_location:
             client = genai.Client(
@@ -322,6 +335,7 @@ class GeminiVoiceRouter:
 
         transcript = ""
         response_text_chunks: list[str] = []
+        output_transcript = ""
 
         async with client.aio.live.connect(model=self.model, config=connect_config) as session:
             for idx in range(0, len(audio_bytes), max(256, self.live_chunk_bytes)):
@@ -343,6 +357,11 @@ class GeminiVoiceRouter:
                         input_tx = getattr(server_content, "input_transcription", None)
                         if input_tx and getattr(input_tx, "text", None):
                             transcript = input_tx.text.strip()
+
+                        output_tx = getattr(server_content, "output_transcription", None)
+                        if output_tx and getattr(output_tx, "text", None):
+                            output_transcript = output_tx.text.strip()
+                            response_text_chunks.append(output_transcript)
 
                         model_turn = getattr(server_content, "model_turn", None)
                         if model_turn:
@@ -501,7 +520,11 @@ class GeminiVoiceRouter:
             return {"intent": fallback_intent, "transcript": cleaned}
 
     def _is_live_model(self, model_name: str) -> bool:
-        return "live" in model_name.casefold()
+        folded = model_name.casefold()
+        return ("live" in folded) or ("native-audio" in folded)
+
+    def _is_native_audio_model(self, model_name: str) -> bool:
+        return "native-audio" in model_name.casefold()
 
     def _is_truthy(self, value: str) -> bool:
         return value.strip().casefold() in {"1", "true", "yes", "on"}

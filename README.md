@@ -70,9 +70,10 @@ Gemini configuration:
 
 - Set `GEMINI_API_KEY` in environment to enable Gemini intent classification.
 - `API_KEY` is also accepted for compatibility with curl examples.
-- Default model is `gemini-live-2.5-flash-native-audio` (override with `GEMINI_MODEL`).
+- Default model is `gemini-2.5-flash-native-audio-latest` (override with `GEMINI_MODEL`).
 - Live audio path is enabled by default (`GEMINI_ENABLE_LIVE_AUDIO=1`) and uses the
   Python GenAI Live SDK (`google-genai`) with `client.aio.live.connect(...)`.
+- Native-audio models are auto-configured with AUDIO modality + speech config.
 - Live SDK API version defaults to `v1alpha` (`GEMINI_LIVE_API_VERSION`).
 - Live audio stream chunk size defaults to `4096` bytes (`GEMINI_LIVE_CHUNK_BYTES`).
 - Live receive timeout defaults to `10` seconds (`GEMINI_LIVE_RECEIVE_TIMEOUT_SECONDS`).
