@@ -37,6 +37,7 @@ LOG_FILE = "/usr/local/freeswitch/log/inbound_socket_agi.log"
 PORTAL_DB_PATH = os.getenv("PORTAL_DB_PATH", "/opt/cc_portal/portal.db")
 AI_RECORD_DIR = Path(os.getenv("AI_RECORD_DIR", "/tmp/callture_ai"))
 AI_NATIVE_CACHE_DIR = Path(os.getenv("AI_NATIVE_CACHE_DIR", "/tmp/callture_ai_native"))
+AI_ELEVEN_CACHE_DIR = Path(os.getenv("AI_ELEVEN_CACHE_DIR", "/tmp/callture_ai_eleven"))
 MAX_INTENT_ATTEMPTS = _env_int("AI_MAX_INTENT_ATTEMPTS", 2, 1)
 DEFAULT_INTENT = os.getenv("AI_DEFAULT_INTENT", "sales").strip().casefold()
 DEFAULT_VOICEMAIL_BOX = os.getenv("AI_DEFAULT_VOICEMAIL_BOX", "").strip()
@@ -58,6 +59,11 @@ AI_WS_LOCAL_PROMPT_ENABLED = os.getenv("AI_WS_LOCAL_PROMPT_ENABLED", "0").strip(
 }
 AI_REALTIME_DIRECT_MODE = os.getenv("AI_REALTIME_DIRECT_MODE", "1").strip().casefold() in {"1", "true", "yes", "on"}
 AI_REALTIME_MAX_SECONDS = _env_int("AI_REALTIME_MAX_SECONDS", 900, 30)
+
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_TTS_VOICE_ID = os.getenv("ELEVENLABS_TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()
+ELEVENLABS_TTS_MODEL_ID = os.getenv("ELEVENLABS_TTS_MODEL_ID", "eleven_turbo_v2_5").strip()
+ELEVENLABS_STT_MODEL_ID = os.getenv("ELEVENLABS_STT_MODEL_ID", "scribe_v1").strip()
 
 GEMINI_LIVE_ENABLED = os.getenv("GEMINI_LIVE_ENABLED", "1").strip().casefold() in {"1", "true", "yes", "on"}
 GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-latest").strip()
@@ -133,6 +139,108 @@ def log(message: str) -> None:
 
 def gemini_api_key() -> str:
     return os.getenv("API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
+
+
+def elevenlabs_api_key() -> str:
+    return ELEVENLABS_API_KEY
+
+
+def _eleven_cache_name(text: str, voice_id: str) -> str:
+    digest = hashlib.sha1(f"{voice_id}:{text}".encode("utf-8"), usedforsecurity=False).hexdigest()
+    return f"eleven_{digest}.wav"
+
+
+def _mp3_to_wav_8k(mp3_path: Path, wav_path: Path) -> bool:
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(mp3_path),
+                "-ar",
+                "8000",
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                "-af",
+                "highpass=f=120,lowpass=f=3400,volume=1.8",
+                "-y",
+                str(wav_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return wav_path.exists() and wav_path.stat().st_size > 44
+    except Exception as exc:
+        log(f"elevenlabs_ffmpeg_error err={exc}")
+        return False
+
+
+def generate_elevenlabs_voice_wav(prompt_text: str, *, cacheable: bool = True) -> str:
+    if not prompt_text.strip():
+        return ""
+    api_key = elevenlabs_api_key()
+    if not api_key:
+        return ""
+    if not ELEVENLABS_TTS_VOICE_ID:
+        return ""
+
+    AI_ELEVEN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = (
+        AI_ELEVEN_CACHE_DIR / _eleven_cache_name(prompt_text, ELEVENLABS_TTS_VOICE_ID)
+        if cacheable
+        else AI_ELEVEN_CACHE_DIR / f"eleven_live_{uuid.uuid4().hex}.wav"
+    )
+    if cacheable and out_path.exists() and out_path.stat().st_size > 44:
+        return str(out_path)
+
+    endpoint = (
+        f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_TTS_VOICE_ID}"
+        "?output_format=mp3_44100_128"
+    )
+    payload = {
+        "text": prompt_text,
+        "model_id": ELEVENLABS_TTS_MODEL_ID or "eleven_turbo_v2_5",
+        "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
+    }
+    req = Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "xi-api-key": api_key,
+            "accept": "audio/mpeg",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with tempfile.NamedTemporaryFile(prefix="eleven_", suffix=".mp3", delete=False) as tmpf:
+        tmp_mp3 = Path(tmpf.name)
+    try:
+        with urlopen(req, timeout=20) as resp:
+            audio = resp.read()
+        if not audio:
+            return ""
+        tmp_mp3.write_bytes(audio)
+        if _mp3_to_wav_8k(tmp_mp3, out_path):
+            return str(out_path)
+        return ""
+    except (HTTPError, URLError, TimeoutError) as exc:
+        log(f"elevenlabs_tts_request_failed err={exc}")
+        return ""
+    except Exception as exc:
+        log(f"elevenlabs_tts_error err={exc}")
+        return ""
+    finally:
+        try:
+            tmp_mp3.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _native_cache_name(text: str) -> str:
@@ -272,6 +380,10 @@ def generate_native_voice_wav(prompt_text: str, *, cacheable: bool, caller_audio
 
 
 def speak(conn: socket.socket, text: str, fallback_wav: str, *, cacheable: bool = True, caller_audio_wav: Path | None = None) -> None:
+    eleven_path = generate_elevenlabs_voice_wav(text.strip(), cacheable=cacheable)
+    if eleven_path:
+        send_execute(conn, "playback", eleven_path)
+        return
     native_path = generate_native_voice_wav(
         text.strip(),
         cacheable=cacheable,
@@ -997,9 +1109,121 @@ def run_realtime_direct_voice_bridge(
     return True
 
 
-def collect_intent_with_retry(conn: socket.socket) -> tuple[str, str, dict[str, str] | None]:
-    # Strict websocket mode: do not use record_session fallback.
-    log("record_fallback_disabled_strict_ws_mode")
+def elevenlabs_transcribe_wav(wav_path: Path) -> str:
+    api_key = elevenlabs_api_key()
+    if not api_key:
+        return ""
+    if not wav_path.exists():
+        return ""
+    try:
+        if wav_path.stat().st_size <= 44:
+            return ""
+    except Exception:
+        return ""
+
+    boundary = f"----callture{uuid.uuid4().hex}"
+    model_id = ELEVENLABS_STT_MODEL_ID or "scribe_v1"
+    audio_data = wav_path.read_bytes()
+    body = bytearray()
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(b'Content-Disposition: form-data; name="model_id"\r\n\r\n')
+    body.extend(model_id.encode("utf-8"))
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(
+        f'Content-Disposition: form-data; name="file"; filename="{wav_path.name}"\r\n'.encode("utf-8")
+    )
+    body.extend(b"Content-Type: audio/wav\r\n\r\n")
+    body.extend(audio_data)
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    req = Request(
+        "https://api.elevenlabs.io/v1/speech-to-text",
+        data=bytes(body),
+        headers={
+            "xi-api-key": api_key,
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=25) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        text = ""
+        if isinstance(payload, dict):
+            text = str(payload.get("text") or payload.get("transcript") or "").strip()
+        return text
+    except (HTTPError, URLError, TimeoutError) as exc:
+        log(f"elevenlabs_stt_request_failed err={exc}")
+        return ""
+    except Exception as exc:
+        log(f"elevenlabs_stt_error err={exc}")
+        return ""
+
+
+def capture_intent_wav(conn: socket.socket, call_uuid: str, seconds: int) -> Path | None:
+    if not call_uuid:
+        return None
+    AI_RECORD_DIR.mkdir(parents=True, exist_ok=True)
+    wav_path = AI_RECORD_DIR / f"intent_{call_uuid}_{int(time.time())}.wav"
+    try:
+        start_reply = send_api(conn, f"uuid_record {call_uuid} start {wav_path} {max(3, seconds)}", timeout=8)
+        log(f"intent_record_start uuid={call_uuid} reply={start_reply.splitlines()[:2]} path={wav_path}")
+        send_execute(conn, "sleep", str((max(3, seconds) + 1) * 1000))
+    finally:
+        try:
+            stop_reply = send_api(conn, f"uuid_record {call_uuid} stop {wav_path}", timeout=8)
+            log(f"intent_record_stop uuid={call_uuid} reply={stop_reply.splitlines()[:2]}")
+        except Exception as exc:
+            log(f"intent_record_stop_error uuid={call_uuid} err={exc}")
+    try:
+        if wav_path.exists() and wav_path.stat().st_size > 44:
+            return wav_path
+    except Exception:
+        return None
+    return None
+
+
+def collect_intent_with_retry(
+    conn: socket.socket,
+    call_uuid: str,
+    caller: str,
+    destination: str,
+) -> tuple[str, str, dict[str, str] | None]:
+    prompts = [
+        (PROMPT_GREETING_TEXT, PROMPT_GREETING),
+        (PROMPT_RETRY_TEXT, PROMPT_RETRY),
+    ]
+    for attempt_idx, (prompt_text, prompt_wav) in enumerate(prompts, start=1):
+        if not uuid_exists(conn, call_uuid):
+            break
+        speak(conn, prompt_text, prompt_wav, cacheable=True)
+        # Short beep to indicate caller should speak now.
+        send_execute(conn, "playback", "tone_stream://%(120,0,1250)")
+        wav_path = capture_intent_wav(conn, call_uuid, AI_RECORD_SECONDS)
+        if not wav_path:
+            log(f"intent_capture_empty uuid={call_uuid} attempt={attempt_idx}")
+            continue
+
+        transcript = elevenlabs_transcribe_wav(wav_path)
+        intent = fallback_intent(transcript)
+        if intent == "invalid":
+            # Keep Gemini as a classifier fallback if transcript is noisy.
+            g_intent, g_transcript = classify_audio_intent(wav_path)
+            if g_intent in {"sales", "support", "billing"}:
+                intent = g_intent
+                if not transcript:
+                    transcript = g_transcript
+        log(
+            f"intent_result uuid={call_uuid} attempt={attempt_idx} "
+            f"intent={intent} transcript={transcript[:120]}"
+        )
+        if intent in {"sales", "support", "billing"}:
+            queue_cfg = queue_config_by_intent(intent)
+            if queue_cfg:
+                return intent, transcript, queue_cfg
     return "invalid", "", None
 
 
@@ -1054,36 +1278,32 @@ def handle_call(conn: socket.socket, addr) -> None:
                 send_execute(conn, "hangup", "NORMAL_CLEARING")
             return
 
-        if not AI_WS_STREAM_ENABLED:
-            log("strict_ws_mode_requires_stream_enabled")
-            speak(conn, PROMPT_INVALID_TEXT, PROMPT_INVALID, cacheable=True)
-            send_execute(conn, "hangup", "NORMAL_CLEARING")
-            return
-
-        intent, transcript, target_cfg = collect_intent_via_ws_stream(
-            conn,
-            call_uuid,
-            caller,
-            dst,
-            prompt_text=PROMPT_GREETING_TEXT,
-            prompt_wav=PROMPT_GREETING,
-        )
-        # One more websocket-only retry; never fall back to record_session.
-        if not target_cfg and uuid_exists(conn, call_uuid):
+        if AI_WS_STREAM_ENABLED:
             intent, transcript, target_cfg = collect_intent_via_ws_stream(
                 conn,
                 call_uuid,
                 caller,
                 dst,
-                prompt_text=PROMPT_RETRY_TEXT,
-                prompt_wav=PROMPT_RETRY,
+                prompt_text=PROMPT_GREETING_TEXT,
+                prompt_wav=PROMPT_GREETING,
             )
+            # One more websocket-only retry.
+            if not target_cfg and uuid_exists(conn, call_uuid):
+                intent, transcript, target_cfg = collect_intent_via_ws_stream(
+                    conn,
+                    call_uuid,
+                    caller,
+                    dst,
+                    prompt_text=PROMPT_RETRY_TEXT,
+                    prompt_wav=PROMPT_RETRY,
+                )
+        else:
+            intent, transcript, target_cfg = collect_intent_with_retry(conn, call_uuid, caller, dst)
 
         if intent in {"sales", "support", "billing"} and target_cfg:
             route_to_queue(conn, call_uuid, intent, target_cfg)
             return
 
-        # Strict websocket mode: no DTMF menu fallback.
         speak(conn, PROMPT_INVALID_TEXT, PROMPT_INVALID, cacheable=True)
         send_execute(conn, "hangup", "NORMAL_CLEARING")
     except Exception as exc:
