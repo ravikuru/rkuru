@@ -64,6 +64,7 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_TTS_VOICE_ID = os.getenv("ELEVENLABS_TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()
 ELEVENLABS_TTS_MODEL_ID = os.getenv("ELEVENLABS_TTS_MODEL_ID", "eleven_turbo_v2_5").strip()
 ELEVENLABS_STT_MODEL_ID = os.getenv("ELEVENLABS_STT_MODEL_ID", "scribe_v1").strip()
+GEMINI_INTENT_TIMEOUT_SECONDS = _env_int("GEMINI_INTENT_TIMEOUT_SECONDS", 8, 3)
 
 GEMINI_LIVE_ENABLED = os.getenv("GEMINI_LIVE_ENABLED", "1").strip().casefold() in {"1", "true", "yes", "on"}
 GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-latest").strip()
@@ -776,7 +777,7 @@ def classify_audio_intent(wav_path: Path) -> tuple[str, str]:
             method="POST",
         )
         try:
-            with urlopen(req, timeout=20) as resp:
+            with urlopen(req, timeout=GEMINI_INTENT_TIMEOUT_SECONDS) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
         except (HTTPError, URLError, TimeoutError) as exc:
             log(f"gemini_request_failed model={m} err={exc}")
@@ -1155,7 +1156,15 @@ def elevenlabs_transcribe_wav(wav_path: Path) -> str:
         if isinstance(payload, dict):
             text = str(payload.get("text") or payload.get("transcript") or "").strip()
         return text
-    except (HTTPError, URLError, TimeoutError) as exc:
+    except HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        log(f"elevenlabs_stt_request_failed err={exc} body={body[:240]}")
+        return ""
+    except (URLError, TimeoutError) as exc:
         log(f"elevenlabs_stt_request_failed err={exc}")
         return ""
     except Exception as exc:
@@ -1168,10 +1177,16 @@ def capture_intent_wav(conn: socket.socket, call_uuid: str, seconds: int) -> Pat
         return None
     AI_RECORD_DIR.mkdir(parents=True, exist_ok=True)
     wav_path = AI_RECORD_DIR / f"intent_{call_uuid}_{int(time.time())}.wav"
+    wait_seconds = max(3, seconds)
     try:
-        start_reply = send_api(conn, f"uuid_record {call_uuid} start {wav_path} {max(3, seconds)}", timeout=8)
-        log(f"intent_record_start uuid={call_uuid} reply={start_reply.splitlines()[:2]} path={wav_path}")
-        send_execute(conn, "sleep", str((max(3, seconds) + 1) * 1000))
+        start_reply = send_api(conn, f"uuid_record {call_uuid} start {wav_path}", timeout=8)
+        log(
+            f"intent_record_start uuid={call_uuid} wait_seconds={wait_seconds} "
+            f"reply={start_reply.splitlines()[:2]} path={wav_path}"
+        )
+        stop_at = time.monotonic() + wait_seconds
+        while time.monotonic() < stop_at and uuid_exists(conn, call_uuid):
+            time.sleep(0.2)
     finally:
         try:
             stop_reply = send_api(conn, f"uuid_record {call_uuid} stop {wav_path}", timeout=8)
@@ -1179,8 +1194,10 @@ def capture_intent_wav(conn: socket.socket, call_uuid: str, seconds: int) -> Pat
         except Exception as exc:
             log(f"intent_record_stop_error uuid={call_uuid} err={exc}")
     try:
-        if wav_path.exists() and wav_path.stat().st_size > 44:
+        if wav_path.exists() and wav_path.stat().st_size > 4096:
             return wav_path
+        if wav_path.exists():
+            log(f"intent_record_too_small uuid={call_uuid} bytes={wav_path.stat().st_size} path={wav_path}")
     except Exception:
         return None
     return None
