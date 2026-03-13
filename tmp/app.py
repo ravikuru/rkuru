@@ -32,7 +32,7 @@ TARGET_INPUT_RATE = int(os.getenv("GEMINI_DIRECT_TARGET_INPUT_RATE", "16000"))
 DEFAULT_OUTPUT_RATE = int(os.getenv("GEMINI_DIRECT_OUTPUT_RATE", "24000"))
 OUTPUT_STREAM_RATE = max(8000, int(os.getenv("GEMINI_DIRECT_OUTPUT_STREAM_RATE", "8000")))
 OUTPUT_GAIN = float(os.getenv("GEMINI_DIRECT_OUTPUT_GAIN", "1.8"))
-OUTPUT_AUDIO_TYPE = os.getenv("GEMINI_DIRECT_OUTPUT_AUDIO_TYPE", "rawAudio").strip().casefold()
+OUTPUT_AUDIO_TYPE = os.getenv("GEMINI_DIRECT_OUTPUT_AUDIO_TYPE", "raw").strip().casefold()
 DEBUG_AUDIO_CHUNKS = max(0, int(os.getenv("GEMINI_DIRECT_DEBUG_AUDIO_CHUNKS", "6")))
 OPENING_PROMPT_DELAY_SECONDS = max(0.0, float(os.getenv("GEMINI_DIRECT_OPENING_PROMPT_DELAY_SECONDS", "1.2")))
 MAX_SESSION_SECONDS = max(30, int(os.getenv("GEMINI_DIRECT_MAX_SESSION_SECONDS", "1800")))
@@ -127,8 +127,8 @@ def _rms16(data: bytes) -> int:
 async def send_stream_audio(websocket: Any, pcm_data: bytes, sample_rate: int, state: BridgeState) -> None:
     if not pcm_data:
         return
-    configured_type = OUTPUT_AUDIO_TYPE if OUTPUT_AUDIO_TYPE in {"raw", "rawaudio", "pcmu", "pcma"} else "rawaudio"
-    audio_type = "rawAudio" if configured_type in {"raw", "rawaudio"} else configured_type
+    configured_type = OUTPUT_AUDIO_TYPE if OUTPUT_AUDIO_TYPE in {"raw", "pcmu", "pcma"} else "raw"
+    audio_type = configured_type
     out_payload = pcm_data
     out_rate = sample_rate
     if configured_type == "pcmu":
