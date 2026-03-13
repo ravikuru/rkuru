@@ -5,6 +5,7 @@
       <action application="log" data="INFO Inbound ${destination_number} from ${network_addr} routed to AI websocket streaming agent"/>
       <action application="set" data="STREAM_PLAYBACK=true"/>
       <action application="set" data="STREAM_BUFFER_SIZE=100"/>
+      <action application="set" data="STREAM_SAMPLE_RATE=8000"/>
       <action application="set" data="STREAM_SUPPRESS_LOG=false"/>
       <action application="set" data="STREAM_GLOBAL_TRACE=true"/>
       <action application="socket" data="127.0.0.1:9090 async full"/>

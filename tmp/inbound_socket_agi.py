@@ -911,19 +911,26 @@ def run_realtime_direct_voice_bridge(
     # playback of inbound websocket audio to the same channel.
     try:
         set_playback_true = send_api(conn, f"uuid_setvar {call_uuid} STREAM_PLAYBACK true", timeout=5)
-        # Some builds interpret booleans differently; set numeric value as well.
+        # Some builds interpret boolean-like values differently.
+        set_playback_enabled = send_api(conn, f"uuid_setvar {call_uuid} STREAM_PLAYBACK enabled", timeout=5)
+        set_playback_active = send_api(conn, f"uuid_setvar {call_uuid} STREAM_PLAYBACK active", timeout=5)
         set_playback_one = send_api(conn, f"uuid_setvar {call_uuid} STREAM_PLAYBACK 1", timeout=5)
         set_buffer = send_api(conn, f"uuid_setvar {call_uuid} STREAM_BUFFER_SIZE 100", timeout=5)
+        set_sample_rate = send_api(conn, f"uuid_setvar {call_uuid} STREAM_SAMPLE_RATE {AI_WS_STREAM_RATE}", timeout=5)
         send_api(conn, f"uuid_setvar {call_uuid} STREAM_SUPPRESS_LOG false", timeout=5)
         send_api(conn, f"uuid_setvar {call_uuid} STREAM_GLOBAL_TRACE true", timeout=5)
         playback_value = uuid_getvar(conn, call_uuid, "STREAM_PLAYBACK")
         buffer_value = uuid_getvar(conn, call_uuid, "STREAM_BUFFER_SIZE")
+        sample_rate_value = uuid_getvar(conn, call_uuid, "STREAM_SAMPLE_RATE")
         log(
             f"stream_playback_vars uuid={call_uuid} "
             f"set_true={set_playback_true.splitlines()[:2]} "
+            f"set_enabled={set_playback_enabled.splitlines()[:2]} "
+            f"set_active={set_playback_active.splitlines()[:2]} "
             f"set_one={set_playback_one.splitlines()[:2]} "
             f"set_buffer={set_buffer.splitlines()[:2]} "
-            f"get_playback={playback_value!r} get_buffer={buffer_value!r}"
+            f"set_sample_rate={set_sample_rate.splitlines()[:2]} "
+            f"get_playback={playback_value!r} get_buffer={buffer_value!r} get_rate={sample_rate_value!r}"
         )
     except Exception as exc:
         log(f"stream_playback_var_set_error uuid={call_uuid} err={exc}")

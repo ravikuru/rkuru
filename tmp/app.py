@@ -33,6 +33,7 @@ DEFAULT_OUTPUT_RATE = int(os.getenv("GEMINI_DIRECT_OUTPUT_RATE", "24000"))
 OUTPUT_STREAM_RATE = max(8000, int(os.getenv("GEMINI_DIRECT_OUTPUT_STREAM_RATE", "8000")))
 OUTPUT_GAIN = float(os.getenv("GEMINI_DIRECT_OUTPUT_GAIN", "1.8"))
 OUTPUT_AUDIO_TYPE = os.getenv("GEMINI_DIRECT_OUTPUT_AUDIO_TYPE", "raw").strip().casefold()
+OUTPUT_TRANSPORT = os.getenv("GEMINI_DIRECT_OUTPUT_TRANSPORT", "json").strip().casefold()
 DEBUG_AUDIO_CHUNKS = max(0, int(os.getenv("GEMINI_DIRECT_DEBUG_AUDIO_CHUNKS", "6")))
 OPENING_PROMPT_DELAY_SECONDS = max(0.0, float(os.getenv("GEMINI_DIRECT_OPENING_PROMPT_DELAY_SECONDS", "1.2")))
 MAX_SESSION_SECONDS = max(30, int(os.getenv("GEMINI_DIRECT_MAX_SESSION_SECONDS", "1800")))
@@ -74,6 +75,7 @@ class BridgeState:
     in_audio_log_count: int = 0
     out_audio_log_count: int = 0
     started_at: float = 0.0
+    raw_audio_init_sent: bool = False
 
 
 def apply_metadata(state: BridgeState, payload_text: str) -> None:
@@ -127,22 +129,39 @@ def _rms16(data: bytes) -> int:
 async def send_stream_audio(websocket: Any, pcm_data: bytes, sample_rate: int, state: BridgeState) -> None:
     if not pcm_data:
         return
+    binary_transport = OUTPUT_TRANSPORT in {"raw_binary", "binary", "raw"}
     configured_type = OUTPUT_AUDIO_TYPE if OUTPUT_AUDIO_TYPE in {"raw", "pcmu", "pcma"} else "raw"
     audio_type = configured_type
     out_payload = pcm_data
     out_rate = sample_rate
-    if configured_type == "pcmu":
-        out_payload = audioop.lin2ulaw(pcm_data, 2)
-        out_rate = 8000
-    elif configured_type == "pcma":
-        out_payload = audioop.lin2alaw(pcm_data, 2)
-        out_rate = 8000
+    if not binary_transport:
+        if configured_type == "pcmu":
+            out_payload = audioop.lin2ulaw(pcm_data, 2)
+            out_rate = 8000
+        elif configured_type == "pcma":
+            out_payload = audioop.lin2alaw(pcm_data, 2)
+            out_rate = 8000
     if state.out_audio_log_count < DEBUG_AUDIO_CHUNKS:
         log(
-            f"gemini_to_fs_audio uuid={state.call_uuid} type={audio_type} "
+            f"gemini_to_fs_audio uuid={state.call_uuid} type={'raw-binary' if binary_transport else audio_type} "
             f"sample_rate={out_rate} bytes={len(out_payload)} pcm_rms={_rms16(pcm_data)}"
         )
         state.out_audio_log_count += 1
+    if binary_transport:
+        if not state.raw_audio_init_sent:
+            await websocket.send(
+                json.dumps(
+                    {"type": "rawAudio", "data": {"sampleRate": out_rate}},
+                    separators=(",", ":"),
+                )
+            )
+            state.raw_audio_init_sent = True
+            log(f"gemini_to_fs_raw_audio_init uuid={state.call_uuid} sample_rate={out_rate}")
+        # Keep packetization aligned with FreeSWITCH 20ms media ticks.
+        chunk_bytes = max(320, int(out_rate * 0.02) * 2)
+        for offset in range(0, len(out_payload), chunk_bytes):
+            await websocket.send(out_payload[offset : offset + chunk_bytes])
+        return
     payload = {
         "type": "streamAudio",
         "data": {
@@ -281,7 +300,10 @@ async def ws_handler(websocket: Any) -> None:
 async def main() -> None:
     if not API_KEY:
         raise RuntimeError("GEMINI_API_KEY/API_KEY is required")
-    log(f"starting_gemini_direct_bridge host={HOST} port={PORT} model={MODEL}")
+    log(
+        f"starting_gemini_direct_bridge host={HOST} port={PORT} model={MODEL} "
+        f"output_transport={OUTPUT_TRANSPORT} output_type={OUTPUT_AUDIO_TYPE}"
+    )
     async with websockets.serve(
         ws_handler,
         HOST,
