@@ -34,6 +34,8 @@ OUTPUT_STREAM_RATE = max(8000, int(os.getenv("GEMINI_DIRECT_OUTPUT_STREAM_RATE",
 OUTPUT_GAIN = float(os.getenv("GEMINI_DIRECT_OUTPUT_GAIN", "1.8"))
 OUTPUT_AUDIO_TYPE = os.getenv("GEMINI_DIRECT_OUTPUT_AUDIO_TYPE", "raw").strip().casefold()
 OUTPUT_TRANSPORT = os.getenv("GEMINI_DIRECT_OUTPUT_TRANSPORT", "json").strip().casefold()
+RAW_BINARY_CHUNK_MS = max(10, int(os.getenv("GEMINI_DIRECT_RAW_BINARY_CHUNK_MS", "20")))
+RAW_BINARY_SEND_INTERVAL_MS = max(5, int(os.getenv("GEMINI_DIRECT_RAW_BINARY_SEND_INTERVAL_MS", "20")))
 DEBUG_AUDIO_CHUNKS = max(0, int(os.getenv("GEMINI_DIRECT_DEBUG_AUDIO_CHUNKS", "6")))
 OPENING_PROMPT_DELAY_SECONDS = max(0.0, float(os.getenv("GEMINI_DIRECT_OPENING_PROMPT_DELAY_SECONDS", "1.2")))
 MAX_SESSION_SECONDS = max(30, int(os.getenv("GEMINI_DIRECT_MAX_SESSION_SECONDS", "1800")))
@@ -157,10 +159,13 @@ async def send_stream_audio(websocket: Any, pcm_data: bytes, sample_rate: int, s
             )
             state.raw_audio_init_sent = True
             log(f"gemini_to_fs_raw_audio_init uuid={state.call_uuid} sample_rate={out_rate}")
-        # Keep packetization aligned with FreeSWITCH 20ms media ticks.
-        chunk_bytes = max(320, int(out_rate * 0.02) * 2)
+        # Keep packetization and pacing aligned with FreeSWITCH media ticks.
+        chunk_bytes = max(320, int(out_rate * (RAW_BINARY_CHUNK_MS / 1000.0)) * 2)
+        send_interval = RAW_BINARY_SEND_INTERVAL_MS / 1000.0
         for offset in range(0, len(out_payload), chunk_bytes):
             await websocket.send(out_payload[offset : offset + chunk_bytes])
+            if send_interval > 0:
+                await asyncio.sleep(send_interval)
         return
     payload = {
         "type": "streamAudio",
@@ -302,7 +307,8 @@ async def main() -> None:
         raise RuntimeError("GEMINI_API_KEY/API_KEY is required")
     log(
         f"starting_gemini_direct_bridge host={HOST} port={PORT} model={MODEL} "
-        f"output_transport={OUTPUT_TRANSPORT} output_type={OUTPUT_AUDIO_TYPE}"
+        f"output_transport={OUTPUT_TRANSPORT} output_type={OUTPUT_AUDIO_TYPE} "
+        f"raw_chunk_ms={RAW_BINARY_CHUNK_MS} raw_interval_ms={RAW_BINARY_SEND_INTERVAL_MS}"
     )
     async with websockets.serve(
         ws_handler,

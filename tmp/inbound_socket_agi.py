@@ -49,6 +49,7 @@ AI_WS_STREAM_WAIT_SECONDS = _env_int("AI_WS_STREAM_WAIT_SECONDS", 6, 5)
 AI_WS_STREAM_MIX = os.getenv("AI_WS_STREAM_MIX", "mono").strip() or "mono"
 AI_WS_STREAM_RATE = os.getenv("AI_WS_STREAM_RATE", "8k").strip() or "8k"
 AI_WS_STREAM_TAG = os.getenv("AI_WS_STREAM_TAG", "callture").strip() or "callture"
+AI_WS_PRESTREAM_TONE = os.getenv("AI_WS_PRESTREAM_TONE", "1").strip().casefold() in {"1", "true", "yes", "on"}
 AI_WS_LOCAL_PROMPT_ENABLED = os.getenv("AI_WS_LOCAL_PROMPT_ENABLED", "0").strip().casefold() in {
     "1",
     "true",
@@ -932,12 +933,29 @@ def run_realtime_direct_voice_bridge(
             f"set_sample_rate={set_sample_rate.splitlines()[:2]} "
             f"get_playback={playback_value!r} get_buffer={buffer_value!r} get_rate={sample_rate_value!r}"
         )
+        try:
+            dump_reply = send_api(conn, f"uuid_dump {call_uuid}", timeout=5)
+            stream_lines = [
+                line.strip()
+                for line in dump_reply.splitlines()
+                if ("STREAM_" in line) or ("read_codec=" in line) or ("write_codec=" in line)
+            ]
+            if stream_lines:
+                log(f"stream_uuid_dump uuid={call_uuid} lines={stream_lines[:20]}")
+        except Exception as dump_exc:
+            log(f"stream_uuid_dump_error uuid={call_uuid} err={dump_exc}")
     except Exception as exc:
         log(f"stream_playback_var_set_error uuid={call_uuid} err={exc}")
 
     # Ensure channel is fully answered before starting media stream.
     # Some upstream carriers drop/ignore early-media RTP, causing silent greetings.
     wait_for_channel_active(conn, call_uuid, timeout_seconds=0.35)
+    if AI_WS_PRESTREAM_TONE:
+        try:
+            tone_reply = send_execute(conn, "playback", "tone_stream://%(300,100,950)")
+            log(f"prestream_tone_playback uuid={call_uuid} reply={tone_reply.splitlines()[:2]}")
+        except Exception as tone_exc:
+            log(f"prestream_tone_error uuid={call_uuid} err={tone_exc}")
 
     metadata = json.dumps(
         {
