@@ -928,12 +928,18 @@ async def security_monitor_middleware(request: Request, call_next):
 
 
 def fs_cli(command: str) -> str:
-    proc = subprocess.run(
-        ["sudo", "/usr/local/freeswitch/bin/fs_cli", "-x", command],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    try:
+        proc = subprocess.run(
+            ["sudo", "/usr/local/freeswitch/bin/fs_cli", "-x", command],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return (
+            f"fs_cli timeout after {int(exc.timeout or 30)}s. "
+            "Command may still be executing in FreeSWITCH."
+        )
     output = (proc.stdout or "").strip()
     err = (proc.stderr or "").strip()
     if err:
@@ -3389,7 +3395,7 @@ def fax_outbound_create(
         )
 
     cmd = (
-        "originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
+        "bgapi originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
         + row["gateway"]
         + "/"
         + row["destination_number"]
@@ -3406,7 +3412,7 @@ def fax_outbound_create(
             "inbound": inbound,
             "outbound": outbound,
             "outbound_trunks": trunks,
-            "message": "Fax send command executed.",
+            "message": "Fax send command queued.",
             "send_result": result,
         },
     )
@@ -3463,7 +3469,7 @@ def fax_outbound_send(
         )
 
     cmd = (
-        "originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
+        "bgapi originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
         + row["gateway"]
         + "/"
         + row["destination_number"]
@@ -3480,7 +3486,7 @@ def fax_outbound_send(
             "inbound": inbound,
             "outbound": outbound,
             "outbound_trunks": trunks,
-            "message": "Outbound fax send command executed.",
+            "message": "Outbound fax send command queued.",
             "send_result": result,
         },
     )
