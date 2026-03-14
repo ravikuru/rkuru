@@ -35,6 +35,7 @@ FAX_TIFF_TO_PDF_SCRIPT = "/usr/local/bin/callture_fax_tiff_to_pdf.sh"
 FAX_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tga", ".svg"}
 FAX_UPLOAD_DIR = Path("/tmp/callture_fax_uploads")
 FAX_FIXED_FROM_NUMBER = "6472585272"
+FAX_FIXED_FROM_NAME = "Ravi Kuru"
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -1152,17 +1153,40 @@ def apply_outbound_trunk_prefix(number: str, prefix: str) -> str:
     return destination if destination.startswith(trunk_prefix) else f"{trunk_prefix}{destination}"
 
 
-def build_fax_bgapi_originate(gateway: str, destination_number: str, fax_file: str) -> str:
+def sip_host_from_proxy(proxy: str) -> str:
+    raw = (proxy or "").strip()
+    if not raw:
+        return ""
+    no_scheme = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", "", raw).lstrip("/")
+    if "@" in no_scheme:
+        no_scheme = no_scheme.split("@", 1)[1]
+    no_scheme = no_scheme.split(";", 1)[0].split("/", 1)[0].strip()
+    if no_scheme.startswith("[") and "]" in no_scheme:
+        return no_scheme[1:no_scheme.index("]")]
+    if ":" in no_scheme:
+        return no_scheme.split(":", 1)[0]
+    return no_scheme
+
+
+def build_fax_bgapi_originate(gateway: str, destination_number: str, fax_file: str, from_host: str) -> str:
+    safe_from_host = sip_host_from_proxy(from_host)
+    from_uri = f"sip:{FAX_FIXED_FROM_NUMBER}@{safe_from_host}" if safe_from_host else ""
     vars_block = (
         "{ignore_early_media=true,"
         f"origination_caller_id_number={FAX_FIXED_FROM_NUMBER},"
-        f"origination_caller_id_name={FAX_FIXED_FROM_NUMBER},"
+        f"origination_caller_id_name={FAX_FIXED_FROM_NAME},"
         f"effective_caller_id_number={FAX_FIXED_FROM_NUMBER},"
-        f"effective_caller_id_name={FAX_FIXED_FROM_NUMBER},"
+        f"effective_caller_id_name={FAX_FIXED_FROM_NAME},"
+        f"sip_from_display={FAX_FIXED_FROM_NAME},"
         f"sip_from_user={FAX_FIXED_FROM_NUMBER},"
         f"sip_contact_user={FAX_FIXED_FROM_NUMBER}"
         "}"
     )
+    if safe_from_host:
+        vars_block = vars_block[:-1] + f",sip_from_host={safe_from_host},sip_contact_host={safe_from_host}"
+        if from_uri:
+            vars_block += f",sip_from_uri={from_uri},sip_invite_from_uri={from_uri}"
+        vars_block += "}"
     return (
         "bgapi originate "
         + vars_block
@@ -3344,7 +3368,7 @@ def fax_outbound_create(
     with closing(db_conn()) as conn:
         trunk_name = gateway.strip()
         trunk = conn.execute(
-            "SELECT name, direction, outbound_prefix FROM trunks WHERE name = ? AND enabled = 1",
+            "SELECT name, direction, outbound_prefix, proxy FROM trunks WHERE name = ? AND enabled = 1",
             (trunk_name,),
         ).fetchone()
         if trunk is None:
@@ -3434,7 +3458,12 @@ def fax_outbound_create(
             },
         )
 
-    cmd = build_fax_bgapi_originate(str(row["gateway"] or ""), fax_target_number, fax_file)
+    cmd = build_fax_bgapi_originate(
+        str(row["gateway"] or ""),
+        fax_target_number,
+        fax_file,
+        str(trunk["proxy"] or ""),
+    )
     result = fs_cli(cmd)
     return templates.TemplateResponse(
         "fax.html",
@@ -3467,7 +3496,7 @@ def fax_outbound_send(
         trunk = None
         if row is not None:
             trunk = conn.execute(
-                "SELECT name, direction, enabled, outbound_prefix FROM trunks WHERE name = ?",
+                "SELECT name, direction, enabled, outbound_prefix, proxy FROM trunks WHERE name = ?",
                 (str(row["gateway"] or "").strip(),),
             ).fetchone()
         inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
@@ -3534,7 +3563,12 @@ def fax_outbound_send(
             },
         )
 
-    cmd = build_fax_bgapi_originate(str(row["gateway"] or ""), fax_target_number, fax_file)
+    cmd = build_fax_bgapi_originate(
+        str(row["gateway"] or ""),
+        fax_target_number,
+        fax_file,
+        str(trunk["proxy"] or ""),
+    )
     result = fs_cli(cmd)
     return templates.TemplateResponse(
         "fax.html",
