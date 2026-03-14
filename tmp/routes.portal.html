@@ -47,6 +47,49 @@
   <p class="hint" id="dp-outbound-note" style="display:none">Outbound option is reserved. Use inbound for DID to application routing.</p>
 </div>
 
+<div class="card">
+  <h3>Configured Routes</h3>
+  <table>
+    <tr>
+      <th>Type</th>
+      <th>Name</th>
+      <th>Number / Pattern</th>
+      <th>Match Mode</th>
+      <th>Trunk</th>
+      <th>Application</th>
+      <th>Action</th>
+      <th>Enabled</th>
+      <th>Created</th>
+    </tr>
+    {% for r in inbound_routes %}
+    <tr>
+      <td>inbound</td>
+      <td>{{ r.name }}</td>
+      <td>{{ r.did_pattern }}</td>
+      <td>{{ r.match_mode }}</td>
+      <td>{{ r.inbound_trunk_name or "all" }}</td>
+      <td>{{ r.destination_type }}</td>
+      <td>{{ r.destination_value or "-" }}</td>
+      <td>{{ r.enabled }}</td>
+      <td>{{ r.created_at }}</td>
+    </tr>
+    {% endfor %}
+    {% for r in outbound_routes %}
+    <tr>
+      <td>outbound</td>
+      <td>{{ r.name }}</td>
+      <td>{{ r.dial_pattern }}</td>
+      <td>{{ r.match_mode }}</td>
+      <td>{{ r.trunk_name }}</td>
+      <td>-</td>
+      <td>-</td>
+      <td>{{ r.enabled }}</td>
+      <td>{{ r.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
 <script>
   const DIALPLAN_ACTION_DATA = {
     queue: [
