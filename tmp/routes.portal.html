@@ -44,13 +44,13 @@
     </div>
     <div id="dp-outbound-fields" style="display:none">
       <label>Dialout Number / Pattern
-        <input id="dp-outbound-pattern" name="outbound_pattern" placeholder="9 or ^00\\d+$" />
+        <input id="dp-outbound-pattern" name="outbound_pattern" value="^1\\d{10}$" placeholder="^1\\d{10}$" />
       </label>
       <label>Match Mode
         <select id="dp-outbound-match-mode" name="outbound_match_mode">
+          <option value="regex">regex</option>
           <option value="prefix">prefix</option>
           <option value="exact">exact</option>
-          <option value="regex">regex</option>
         </select>
       </label>
       <label>Outbound Trunk
@@ -140,6 +140,7 @@
 </div>
 
 <script>
+  const OUTBOUND_DEFAULT_PATTERN = "^1\\d{10}$";
   const DIALPLAN_ACTION_DATA = {
     queue: [
       {% for q in queues %}
@@ -294,8 +295,8 @@
     routeId.value = button.dataset.routeId || "";
     routeKind.value = "outbound";
     fileType.value = "outbound";
-    outboundPattern.value = button.dataset.dialPattern || "";
-    outboundMode.value = button.dataset.matchMode || "prefix";
+    outboundPattern.value = button.dataset.dialPattern || OUTBOUND_DEFAULT_PATTERN;
+    outboundMode.value = button.dataset.matchMode || "regex";
     outboundTrunk.value = button.dataset.trunkName || "";
     applyDialplanTypeVisibility();
     saveBtn.textContent = "Update Dialplan";
@@ -326,8 +327,8 @@
     if (destination) destination.value = "";
     if (inboundTrunk) inboundTrunk.value = "";
     if (appInput) appInput.value = "queue";
-    if (outboundPattern) outboundPattern.value = "";
-    if (outboundMode) outboundMode.value = "prefix";
+    if (outboundPattern) outboundPattern.value = OUTBOUND_DEFAULT_PATTERN;
+    if (outboundMode) outboundMode.value = "regex";
     if (outboundTrunk) outboundTrunk.value = "";
     refreshDialplanActionOptions();
     if (saveBtn) saveBtn.textContent = "Save Dialplan";

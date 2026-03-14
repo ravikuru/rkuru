@@ -2174,7 +2174,7 @@ def dialplan_route_create(
     route_id: str = Form(""),
     route_kind: str = Form("inbound"),
     outbound_pattern: str = Form(""),
-    outbound_match_mode: str = Form("prefix"),
+    outbound_match_mode: str = Form("regex"),
     outbound_trunk_name: str = Form(""),
     enabled: str = Form("true"),
 ):
@@ -2192,7 +2192,8 @@ def dialplan_route_create(
         edit_kind = route_type
 
     if route_type == "outbound":
-        dial_value = (outbound_pattern or "").strip()
+        outbound_default_pattern = r"^1\d{10}$"
+        dial_value = (outbound_pattern or "").strip() or outbound_default_pattern
         mode_value = normalize_match_mode(outbound_match_mode, outbound=True)
         trunk_value = (outbound_trunk_name or "").strip()
         if not dial_value:
