@@ -1162,6 +1162,10 @@ def sync_inbound_routes_dialplan() -> None:
                     '<action application="hangup" data="NORMAL_CLEARING"/>',
                 ]
             )
+        elif destination_type == "conference":
+            if not destination_value:
+                continue
+            actions.append(f'<action application="conference" data="{destination_value}@default"/>')
         else:
             continue
         condition_field = "destination_number"
@@ -1964,6 +1968,9 @@ def routes_page_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     fax_inbound = conn.execute(
         "SELECT id, did FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC"
     ).fetchall()
+    conferences = conn.execute(
+        "SELECT room_number, display_name FROM conferences WHERE enabled = 1 ORDER BY room_number"
+    ).fetchall()
     return {
         "inbound_routes": inbound_routes,
         "outbound_routes": outbound_routes,
@@ -1974,6 +1981,7 @@ def routes_page_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "devices": devices,
         "vpbx_extensions": vpbx_extensions,
         "fax_inbound": fax_inbound,
+        "conferences": conferences,
     }
 
 
@@ -2154,6 +2162,188 @@ def route_trunk_delete(
     )
 
 
+@app.post("/routes/dialplan", response_class=HTMLResponse)
+def dialplan_route_create(
+    request: Request,
+    file_type: str = Form("inbound"),
+    country_code: str = Form("1"),
+    destination_number: str = Form(""),
+    application: str = Form("queue"),
+    action_value: str = Form(""),
+    enabled: str = Form("true"),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+
+    route_type = (file_type or "").strip().lower()
+    if route_type not in {"inbound", "outbound"}:
+        route_type = "inbound"
+
+    # This form is for DID->application routing.
+    if route_type == "outbound":
+        with closing(db_conn()) as conn:
+            payload = routes_page_payload(conn)
+        return templates.TemplateResponse(
+            "routes.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Outbound route save is not used in this form. Use inbound for DID to application mapping.",
+            },
+        )
+
+    cc_digits = re.sub(r"\D+", "", (country_code or "").strip()) or "1"
+    dst_digits = re.sub(r"\D+", "", (destination_number or "").strip())
+    if not dst_digits:
+        with closing(db_conn()) as conn:
+            payload = routes_page_payload(conn)
+        return templates.TemplateResponse(
+            "routes.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Destination number is required for inbound dialplan file type.",
+            },
+        )
+    did_value = dst_digits if dst_digits.startswith(cc_digits) else f"{cc_digits}{dst_digits}"
+
+    app_key = (application or "").strip().lower()
+    app_map = {
+        "queue": "queue",
+        "fax in": "fax",
+        "fax_in": "fax",
+        "fax": "fax",
+        "vpbx": "vpbx",
+        "conference": "conference",
+    }
+    dest_type = app_map.get(app_key)
+    if dest_type is None:
+        with closing(db_conn()) as conn:
+            payload = routes_page_payload(conn)
+        return templates.TemplateResponse(
+            "routes.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Applications must be one of: queue, fax in, vPBX, conference.",
+            },
+        )
+
+    dest_value = (action_value or "").strip()
+    if dest_type in {"queue", "vpbx", "conference"} and not dest_value:
+        with closing(db_conn()) as conn:
+            payload = routes_page_payload(conn)
+        return templates.TemplateResponse(
+            "routes.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Action is required for the selected application.",
+            },
+        )
+    if dest_type == "fax" and not dest_value:
+        # Default fax action to DID if no explicit fax inbound DID chosen.
+        dest_value = did_value
+
+    with closing(db_conn()) as conn:
+        if dest_type == "queue":
+            item = conn.execute("SELECT number FROM queues WHERE number = ?", (dest_value,)).fetchone()
+            if item is None:
+                payload = routes_page_payload(conn)
+                return templates.TemplateResponse(
+                    "routes.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"Queue {dest_value} does not exist.",
+                    },
+                )
+        elif dest_type == "vpbx":
+            item = conn.execute("SELECT extension FROM vpbx_extensions WHERE extension = ?", (dest_value,)).fetchone()
+            if item is None:
+                payload = routes_page_payload(conn)
+                return templates.TemplateResponse(
+                    "routes.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"vPBX extension {dest_value} does not exist.",
+                    },
+                )
+        elif dest_type == "conference":
+            item = conn.execute(
+                "SELECT room_number FROM conferences WHERE room_number = ? AND enabled = 1",
+                (dest_value,),
+            ).fetchone()
+            if item is None:
+                payload = routes_page_payload(conn)
+                return templates.TemplateResponse(
+                    "routes.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"Conference room {dest_value} does not exist or is disabled.",
+                    },
+                )
+        elif dest_type == "fax":
+            item = conn.execute(
+                "SELECT did FROM fax_routes WHERE direction = 'inbound' AND did = ?",
+                (dest_value,),
+            ).fetchone()
+            if item is None:
+                # Keep fax routing usable even if Fax In page has not been configured.
+                dest_value = did_value
+
+        route_name = f"Dialplan In {did_value} -> {dest_type}:{dest_value}"
+        conn.execute(
+            """
+            INSERT INTO inbound_routes(
+                name, did_pattern, match_mode, inbound_trunk_name, destination_type, destination_value, enabled, created_at
+            )
+            VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                route_name,
+                did_value,
+                "exact",
+                "",
+                dest_type,
+                dest_value,
+                1 if as_bool(enabled) else 0,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        conn.commit()
+        payload = routes_page_payload(conn)
+
+    sync_inbound_routes_dialplan()
+    return templates.TemplateResponse(
+        "routes.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": f"Dialplan saved: inbound {did_value} -> {dest_type} {dest_value}",
+            "error": None,
+        },
+    )
+
+
 @app.post("/routes/inbound", response_class=HTMLResponse)
 def inbound_route_create(
     request: Request,
@@ -2171,7 +2361,7 @@ def inbound_route_create(
 
     mode = normalize_match_mode(match_mode)
     dest_type = (destination_type or "").strip().lower()
-    if dest_type not in {"queue", "device", "fax", "vpbx"}:
+    if dest_type not in {"queue", "device", "fax", "vpbx", "conference"}:
         with closing(db_conn()) as conn:
             payload = routes_page_payload(conn)
         return templates.TemplateResponse(
@@ -2199,7 +2389,7 @@ def inbound_route_create(
                 "user": user,
                 **payload,
                 "message": None,
-                "error": "Destination value is required for queue/device/vPBX routes.",
+                "error": "Destination value is required for queue/device/vPBX/conference routes.",
             },
         )
 

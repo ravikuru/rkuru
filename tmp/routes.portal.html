@@ -43,6 +43,41 @@
     </form>
     <p class="hint">IP-based trunk authentication only. Inbound and outbound fields change based on selected trunk direction.</p>
   </div>
+
+  <div class="card">
+    <h3>Dialplan File</h3>
+    <form method="post" action="/routes/dialplan" class="grid-form" id="dialplan-form">
+      <label>File Type (Inbound/Outbound)
+        <select id="dp-file-type" name="file_type">
+          <option value="inbound">inbound</option>
+          <option value="outbound">outbound</option>
+        </select>
+      </label>
+      <label>Country Code
+        <input id="dp-country-code" name="country_code" value="1" placeholder="1 for USA" />
+      </label>
+      <div id="dp-inbound-fields">
+        <label>Destination number
+          <input id="dp-destination-number" name="destination_number" placeholder="4163501959" />
+        </label>
+        <label>Applications
+          <select id="dp-application" name="application">
+            <option value="queue">queue</option>
+            <option value="fax in">fax in</option>
+            <option value="vpbx">vPBX</option>
+            <option value="conference">conference</option>
+          </select>
+        </label>
+        <label>Action
+          <select id="dp-action-value" name="action_value"></select>
+        </label>
+      </div>
+      <input type="hidden" name="enabled" value="true" />
+      <button type="submit">Save Dialplan</button>
+    </form>
+    <p class="hint">Inbound calls to the destination number will go to the selected application/action.</p>
+    <p class="hint" id="dp-outbound-note" style="display:none">Outbound option is reserved. Use inbound for DID to application routing.</p>
+  </div>
 </div>
 
 <div class="card">
@@ -87,7 +122,91 @@
     {% endfor %}
   </table>
 </div>
+
+<div class="card">
+  <h3>Configured Inbound Dialplan</h3>
+  <table>
+    <tr><th>ID</th><th>Name</th><th>DID/Pattern</th><th>Application</th><th>Action</th><th>Enabled</th><th>Created</th></tr>
+    {% for r in inbound_routes %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td>{{ r.name }}</td>
+      <td>{{ r.did_pattern }}</td>
+      <td>{{ r.destination_type }}</td>
+      <td>{{ r.destination_value or "-" }}</td>
+      <td>{{ r.enabled }}</td>
+      <td>{{ r.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
 <script>
+  const DIALPLAN_ACTION_DATA = {
+    queue: [
+      {% for q in queues %}
+      { value: {{ q.number | tojson }}, label: {{ ("Queue " ~ q.number ~ " - " ~ q.name) | tojson }} }{{ "," if not loop.last else "" }}
+      {% endfor %}
+    ],
+    "fax in": [
+      {% for f in fax_inbound %}
+      { value: {{ f.did | tojson }}, label: {{ ("Fax DID " ~ f.did) | tojson }} }{{ "," if not loop.last else "" }}
+      {% endfor %}
+    ],
+    vpbx: [
+      {% for e in vpbx_extensions %}
+      { value: {{ e.extension | tojson }}, label: {{ ("vPBX " ~ e.extension ~ " - " ~ e.display_name) | tojson }} }{{ "," if not loop.last else "" }}
+      {% endfor %}
+    ],
+    conference: [
+      {% for c in conferences %}
+      { value: {{ c.room_number | tojson }}, label: {{ ("Conference " ~ c.room_number ~ " - " ~ c.display_name) | tojson }} }{{ "," if not loop.last else "" }}
+      {% endfor %}
+    ]
+  };
+
+  function refreshDialplanActionOptions() {
+    const appInput = document.getElementById("dp-application");
+    const actionInput = document.getElementById("dp-action-value");
+    if (!appInput || !actionInput) {
+      return;
+    }
+    const selectedApp = (appInput.value || "queue").toLowerCase();
+    const options = DIALPLAN_ACTION_DATA[selectedApp] || [];
+    actionInput.innerHTML = "";
+    if (options.length === 0) {
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "No items available";
+      actionInput.appendChild(empty);
+      actionInput.value = "";
+      return;
+    }
+    options.forEach(function (item) {
+      const opt = document.createElement("option");
+      opt.value = item.value;
+      opt.textContent = item.label;
+      actionInput.appendChild(opt);
+    });
+  }
+
+  function applyDialplanTypeVisibility() {
+    const fileType = document.getElementById("dp-file-type");
+    const inboundFields = document.getElementById("dp-inbound-fields");
+    const outboundNote = document.getElementById("dp-outbound-note");
+    const destination = document.getElementById("dp-destination-number");
+    const application = document.getElementById("dp-application");
+    const action = document.getElementById("dp-action-value");
+    if (!fileType || !inboundFields || !outboundNote || !destination || !application || !action) {
+      return;
+    }
+    const isInbound = (fileType.value || "").toLowerCase() === "inbound";
+    inboundFields.style.display = isInbound ? "contents" : "none";
+    outboundNote.style.display = isInbound ? "none" : "block";
+    destination.required = isInbound;
+    application.required = isInbound;
+    action.required = isInbound;
+  }
+
   function editTrunk(trunk) {
     const nameInput = document.getElementById("trunk-name");
     const proxyInput = document.getElementById("trunk-proxy");
@@ -155,11 +274,21 @@
     if (direction) {
       direction.addEventListener("change", applyTrunkDirectionVisibility);
     }
+    const fileType = document.getElementById("dp-file-type");
+    const appInput = document.getElementById("dp-application");
+    if (fileType) {
+      fileType.addEventListener("change", applyDialplanTypeVisibility);
+    }
+    if (appInput) {
+      appInput.addEventListener("change", refreshDialplanActionOptions);
+    }
     document.querySelectorAll(".trunk-edit-btn").forEach(function (button) {
       button.addEventListener("click", function () {
         editTrunkFromButton(button);
       });
     });
+    refreshDialplanActionOptions();
+    applyDialplanTypeVisibility();
     applyTrunkDirectionVisibility();
   });
 </script>
