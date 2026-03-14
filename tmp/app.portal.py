@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -33,6 +33,7 @@ FAX_INBOUND_DIR = FAX_STORAGE_DIR / "inbound"
 FAX_OUTBOUND_DIR = FAX_STORAGE_DIR / "outbound"
 FAX_TIFF_TO_PDF_SCRIPT = "/usr/local/bin/callture_fax_tiff_to_pdf.sh"
 FAX_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tga", ".svg"}
+FAX_UPLOAD_DIR = Path("/tmp/callture_fax_uploads")
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -1114,6 +1115,20 @@ def prepare_outbound_fax_file(file_path: str, fax_id: int) -> str:
 
     err_text = " | ".join([e for e in errors if e])[:500]
     raise ValueError(f"Unable to convert source file to TIFF. {err_text}")
+
+
+def save_uploaded_fax_file(file_upload: UploadFile) -> str:
+    raw_name = Path((file_upload.filename or "").strip()).name or "fax_upload.bin"
+    safe_name = re.sub(r"[^0-9A-Za-z._-]+", "_", raw_name).strip("._")
+    if not safe_name:
+        safe_name = "fax_upload.bin"
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    FAX_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    dest = FAX_UPLOAD_DIR / f"{stamp}_{safe_name}"
+    file_upload.file.seek(0)
+    with dest.open("wb") as out:
+        shutil.copyfileobj(file_upload.file, out)
+    return str(dest)
 
 
 def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password: str, context: str) -> None:
@@ -3232,11 +3247,55 @@ def fax_outbound_create(
     request: Request,
     destination_number: str = Form(...),
     gateway: str = Form(...),
-    file_path: str = Form(...),
+    file_path: str = Form(""),
+    file_upload: UploadFile | None = File(default=None),
 ):
     user, denied = require_admin_or_redirect(request)
     if denied:
         return denied
+    source_path = (file_path or "").strip()
+    if file_upload is not None and (file_upload.filename or "").strip():
+        try:
+            source_path = save_uploaded_fax_file(file_upload)
+        except Exception as exc:
+            with closing(db_conn()) as conn:
+                inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
+                outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
+                trunks = conn.execute(
+                    "SELECT name, proxy, direction FROM trunks WHERE enabled = 1 AND direction IN ('outbound', 'both') ORDER BY name"
+                ).fetchall()
+            return templates.TemplateResponse(
+                "fax.html",
+                {
+                    "request": request,
+                    "user": user,
+                    "inbound": inbound,
+                    "outbound": outbound,
+                    "outbound_trunks": trunks,
+                    "message": f"Upload failed: {exc}",
+                    "send_result": None,
+                },
+            )
+    if not source_path:
+        with closing(db_conn()) as conn:
+            inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
+            outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
+            trunks = conn.execute(
+                "SELECT name, proxy, direction FROM trunks WHERE enabled = 1 AND direction IN ('outbound', 'both') ORDER BY name"
+            ).fetchall()
+        return templates.TemplateResponse(
+            "fax.html",
+            {
+                "request": request,
+                "user": user,
+                "inbound": inbound,
+                "outbound": outbound,
+                "outbound_trunks": trunks,
+                "message": "Please upload a file or provide a file path.",
+                "send_result": None,
+            },
+        )
+
     with closing(db_conn()) as conn:
         trunk_name = gateway.strip()
         trunk = conn.execute(
@@ -3285,7 +3344,7 @@ def fax_outbound_create(
             INSERT INTO fax_routes(direction, destination_number, gateway, file_path, enabled, created_at)
             VALUES('outbound', ?, ?, ?, 1, ?)
             """,
-            (destination_number.strip(), trunk_name, file_path.strip(), datetime.now(UTC).isoformat()),
+            (destination_number.strip(), trunk_name, source_path, datetime.now(UTC).isoformat()),
         )
         fax_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         conn.commit()

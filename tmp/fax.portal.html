@@ -16,7 +16,7 @@
 
   <div class="card">
     <h3>Outbound Fax Job</h3>
-    <form method="post" action="/fax/outbound" class="grid-form">
+    <form method="post" action="/fax/outbound" class="grid-form" enctype="multipart/form-data">
       <label>Destination Number<input name="destination_number" required /></label>
       <label>Trunk
         <select name="gateway" required>
@@ -25,10 +25,11 @@
           {% endfor %}
         </select>
       </label>
-      <label>File Path (any type)<input name="file_path" placeholder="/usr/local/freeswitch/storage/fax/outbound/test.pdf" required /></label>
+      <label>File Path (any type)<input type="file" name="file_upload" required /></label>
+      <label>Or Server File Path (optional)<input name="file_path" placeholder="/usr/local/freeswitch/storage/fax/outbound/test.pdf" /></label>
       <button type="submit">Send Fax</button>
     </form>
-    <p class="hint">PDF and all common picture files (jpg/png/webp/gif/bmp/svg/tga) are auto-converted to TIFF, then sent via selected trunk.</p>
+    <p class="hint">Upload from your computer, or provide a server path. PDF and all common picture files are auto-converted to TIFF, then sent via selected trunk.</p>
   </div>
 </div>
 
