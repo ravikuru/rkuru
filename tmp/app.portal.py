@@ -2346,6 +2346,7 @@ def trunks_outbound_create(
         return denied
     trunk_name = name.strip()
     proxy_value = proxy.strip()
+    out_prefix_value = out_prefix.strip()
     if not trunk_name or not proxy_value:
         with closing(db_conn()) as conn:
             payload = trunks_page_payload(conn)
@@ -2359,6 +2360,19 @@ def trunks_outbound_create(
                 "error": "Trunk ID and Proxy / SIP Host/IP are required.",
             },
         )
+    if not out_prefix_value:
+        with closing(db_conn()) as conn:
+            payload = trunks_page_payload(conn)
+        return templates.TemplateResponse(
+            "trunks.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Outbound Prefix is required for outbound trunk.",
+            },
+        )
     with closing(db_conn()) as conn:
         saved_name = upsert_trunk_record(
             conn,
@@ -2368,7 +2382,7 @@ def trunks_outbound_create(
             in_prefix="",
             inbound_did_pattern="",
             inbound_match_mode="exact",
-            out_prefix=out_prefix,
+            out_prefix=out_prefix_value,
             dialout_pattern=dialout_pattern,
             outbound_match_mode=outbound_match_mode,
             enabled=as_bool(enabled),

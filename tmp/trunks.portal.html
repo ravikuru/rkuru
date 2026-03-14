@@ -35,7 +35,7 @@
     <form method="post" action="/trunks/outbound" class="grid-form" id="outbound-trunk-form">
       <label>Trunk ID<input id="out-name" name="name" placeholder="carrier_out_1" required /></label>
       <label>Proxy / SIP Host/Ip address<input id="out-proxy" name="proxy" placeholder="64.34.222.236 or sip.carrier.com" required /></label>
-      <label>Out prefix<input id="out-prefix" name="out_prefix" placeholder="optional outbound prefix" /></label>
+      <label>Prefix<input id="out-prefix" name="out_prefix" placeholder="required outbound prefix (example: 9)" required /></label>
       <label>Dialout Number / Pattern<input id="out-pattern" name="dialout_pattern" value="^1\\d{10}$" /></label>
       <label>Match Mode
         <select id="out-mode" name="outbound_match_mode">
