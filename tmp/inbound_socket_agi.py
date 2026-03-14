@@ -847,6 +847,8 @@ def route_to_queue(conn: socket.socket, call_uuid: str, intent: str, queue_cfg: 
     # Keep outbound leg in narrowband telephony codecs for interop.
     send_execute(conn, "set", "absolute_codec_string=PCMU,PCMA")
     send_execute(conn, "set", "continue_on_fail=true")
+    # Once a bridge is established and ends, do not re-run another dial cycle.
+    send_execute(conn, "set", "hangup_after_bridge=true")
 
     combined_targets_raw = (queue_cfg.get("dial_targets", "") or "").strip()
     if not combined_targets_raw:
@@ -905,6 +907,9 @@ def route_to_queue(conn: socket.socket, call_uuid: str, intent: str, queue_cfg: 
                     # If answered leg then completed, do not keep retrying.
                     if dispo.casefold() in {"success", "answered"}:
                         return
+                    # Some carriers report bridge completion only via hangup cause.
+                    if bhc.casefold() in {"normal_clearing", "normal_unspecified"}:
+                        return
                     if QUEUE_RETRY_DELAY_MS > 0:
                         time.sleep(QUEUE_RETRY_DELAY_MS / 1000.0)
             else:
@@ -921,6 +926,8 @@ def route_to_queue(conn: socket.socket, call_uuid: str, intent: str, queue_cfg: 
                 if not uuid_exists(conn, call_uuid):
                     return
                 if dispo.casefold() in {"success", "answered"}:
+                    return
+                if bhc.casefold() in {"normal_clearing", "normal_unspecified"}:
                     return
                 if QUEUE_RETRY_DELAY_MS > 0:
                     time.sleep(QUEUE_RETRY_DELAY_MS / 1000.0)
@@ -1209,13 +1216,9 @@ def collect_intent_with_retry(
     caller: str,
     destination: str,
 ) -> tuple[str, str, dict[str, str] | None]:
-    prompts = [
-        (PROMPT_GREETING_TEXT, PROMPT_GREETING),
-    ]
-    for attempt_idx, (prompt_text, prompt_wav) in enumerate(prompts, start=1):
+    for attempt_idx in range(1, max(1, MAX_INTENT_ATTEMPTS) + 1):
         if not uuid_exists(conn, call_uuid):
             break
-        speak(conn, prompt_text, prompt_wav, cacheable=True)
         wav_path = capture_intent_wav(conn, call_uuid, AI_RECORD_SECONDS)
         if not wav_path:
             log(f"intent_capture_empty uuid={call_uuid} attempt={attempt_idx}")
