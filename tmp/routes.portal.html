@@ -1,153 +1,52 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Call Routes & Trunks</h2>
+<h2>Dialplan</h2>
 {% if message %}<p class="ok">{{ message }}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
-<div class="grid">
-  <div class="card">
-    <h3>Trunk Settings</h3>
-    <form method="post" action="/routes/trunks" class="grid-form" id="trunk-form">
-      <label>Trunk ID<input id="trunk-name" name="name" placeholder="carrier_a" required /></label>
-      <label>Proxy / SIP Host/Ip address<input id="trunk-proxy" name="proxy" placeholder="64.34.222.236 or sip.carrier.com" required /></label>
-      <label>Trunk Direction (in/out)
-        <select name="direction" id="trunk-direction">
-          <option value="inbound">inbound</option>
-          <option value="outbound">outbound</option>
+<div class="card">
+  <h3>Dialplan File</h3>
+  <form method="post" action="/routes/dialplan" class="grid-form" id="dialplan-form">
+    <label>File Type (Inbound/Outbound)
+      <select id="dp-file-type" name="file_type">
+        <option value="inbound">inbound</option>
+        <option value="outbound">outbound</option>
+      </select>
+    </label>
+    <label>Country Code
+      <input id="dp-country-code" name="country_code" value="1" placeholder="1 for USA" />
+    </label>
+    <div id="dp-inbound-fields">
+      <label>Destination number
+        <input id="dp-destination-number" name="destination_number" placeholder="4163501959" />
+      </label>
+      <label>Available Inbound Trunk
+        <select id="dp-inbound-trunk" name="inbound_trunk_name">
+          <option value="">all</option>
+          {% for t in inbound_trunks %}
+          <option value="{{ t.name }}">{{ t.name }}</option>
+          {% endfor %}
         </select>
       </label>
-      <div id="trunk-inbound-fields">
-        <label>In prefix<input id="trunk-in-prefix" name="in_prefix" placeholder="Enter inbound prefix digits" /></label>
-        <label>Inbound DID / Pattern<input id="inbound-did-pattern" name="did_pattern" value="^(1?\d{10})$" placeholder="4163501959 or ^647\\d{7}$" /></label>
-        <label>Match Mode
-          <select id="trunk-inbound-match-mode" name="inbound_match_mode">
-            <option value="exact">exact</option>
-            <option value="prefix">prefix</option>
-            <option value="regex">regex</option>
-          </select>
-        </label>
-      </div>
-      <div id="trunk-outbound-fields">
-        <label>Out prefix<input id="trunk-out-prefix" name="out_prefix" placeholder="Enter outbound prefix digits" /></label>
-        <label>Dialout Number / Pattern<input id="outbound-dial-pattern" name="dial_pattern" value="^(1?\d{10})$" placeholder="9 or ^00\\d+$" /></label>
-        <label>Match Mode
-          <select id="trunk-outbound-match-mode" name="outbound_match_mode">
-            <option value="prefix">prefix</option>
-            <option value="exact">exact</option>
-            <option value="regex">regex</option>
-          </select>
-        </label>
-      </div>
-      <input type="hidden" name="enabled" value="true" />
-      <button type="submit">Save Trunk</button>
-    </form>
-    <p class="hint">IP-based trunk authentication only. Inbound and outbound fields change based on selected trunk direction.</p>
-  </div>
-
-  <div class="card">
-    <h3>Dialplan File</h3>
-    <form method="post" action="/routes/dialplan" class="grid-form" id="dialplan-form">
-      <label>File Type (Inbound/Outbound)
-        <select id="dp-file-type" name="file_type">
-          <option value="inbound">inbound</option>
-          <option value="outbound">outbound</option>
+      <label>Applications
+        <select id="dp-application" name="application">
+          <option value="queue">queue</option>
+          <option value="fax in">fax in</option>
+          <option value="vpbx">vPBX</option>
+          <option value="conference">conference</option>
         </select>
       </label>
-      <label>Country Code
-        <input id="dp-country-code" name="country_code" value="1" placeholder="1 for USA" />
+      <label>Action
+        <select id="dp-action-value" name="action_value"></select>
       </label>
-      <div id="dp-inbound-fields">
-        <label>Destination number
-          <input id="dp-destination-number" name="destination_number" placeholder="4163501959" />
-        </label>
-        <label>Available Inbound Trunk
-          <select id="dp-inbound-trunk" name="inbound_trunk_name">
-            <option value="">all</option>
-            {% for t in inbound_trunks %}
-            <option value="{{ t.name }}">{{ t.name }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>Applications
-          <select id="dp-application" name="application">
-            <option value="queue">queue</option>
-            <option value="fax in">fax in</option>
-            <option value="vpbx">vPBX</option>
-            <option value="conference">conference</option>
-          </select>
-        </label>
-        <label>Action
-          <select id="dp-action-value" name="action_value"></select>
-        </label>
-      </div>
-      <input type="hidden" name="enabled" value="true" />
-      <button type="submit">Save Dialplan</button>
-    </form>
-    <p class="hint">Inbound calls to the destination number will go to the selected application/action.</p>
-    <p class="hint" id="dp-outbound-note" style="display:none">Outbound option is reserved. Use inbound for DID to application routing.</p>
-  </div>
+    </div>
+    <input type="hidden" name="enabled" value="true" />
+    <button type="submit">Save Dialplan</button>
+  </form>
+  <p class="hint">Inbound calls to the destination number will go to the selected application/action.</p>
+  <p class="hint" id="dp-outbound-note" style="display:none">Outbound option is reserved. Use inbound for DID to application routing.</p>
 </div>
 
-<div class="card">
-  <h3>Configured Trunks</h3>
-  <table>
-    <tr><th>Name</th><th>Direction</th><th>Proxy</th><th>In Prefix</th><th>Inbound DID / Pattern</th><th>In Match</th><th>Out Prefix</th><th>Dialout Number / Pattern</th><th>Out Match</th><th>Enabled</th><th>Created</th><th>Actions</th></tr>
-    {% for t in trunks %}
-    <tr>
-      <td>{{ t.name }}</td>
-      <td>{{ t.direction or "inbound" }}</td>
-      <td>{{ t.proxy }}</td>
-      <td>{{ t.in_prefix or "-" }}</td>
-      <td>{{ t.inbound_did_pattern or "-" }}</td>
-      <td>{{ t.inbound_match_mode or "-" }}</td>
-      <td>{{ t.outbound_prefix or "-" }}</td>
-      <td>{{ t.dialout_pattern or "-" }}</td>
-      <td>{{ t.outbound_match_mode or "-" }}</td>
-      <td>{{ t.enabled }}</td>
-      <td>{{ t.created_at }}</td>
-      <td>
-        <button
-          type="button"
-          class="trunk-edit-btn"
-          data-name="{{ t.name }}"
-          data-proxy="{{ t.proxy }}"
-          data-direction="{{ t.direction or 'inbound' }}"
-          data-in-prefix="{{ t.in_prefix or '' }}"
-          data-inbound-did-pattern="{{ t.inbound_did_pattern or '' }}"
-          data-inbound-match-mode="{{ t.inbound_match_mode or 'exact' }}"
-          data-out-prefix="{{ t.outbound_prefix or '' }}"
-          data-dialout-pattern="{{ t.dialout_pattern or '' }}"
-          data-outbound-match-mode="{{ t.outbound_match_mode or 'prefix' }}"
-        >
-          Edit
-        </button>
-        <form method="post" action="/routes/trunks/delete" style="display:inline" onsubmit="return confirm('Remove trunk {{ t.name }}?');">
-          <input type="hidden" name="name" value="{{ t.name }}" />
-          <button type="submit">Remove</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-</div>
-
-<div class="card">
-  <h3>Configured Inbound Dialplan</h3>
-  <table>
-    <tr><th>ID</th><th>Name</th><th>DID/Pattern</th><th>Application</th><th>Action</th><th>Enabled</th><th>Created</th></tr>
-    {% for r in inbound_routes %}
-    <tr>
-      <td>{{ r.id }}</td>
-      <td>{{ r.name }}</td>
-      <td>{{ r.did_pattern }}</td>
-      <td>{{ r.destination_type }}</td>
-      <td>{{ r.destination_value or "-" }}</td>
-      <td>{{ r.enabled }}</td>
-      <td>{{ r.created_at }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-</div>
 <script>
   const DIALPLAN_ACTION_DATA = {
     queue: [
@@ -215,73 +114,7 @@
     action.required = isInbound;
   }
 
-  function editTrunk(trunk) {
-    const nameInput = document.getElementById("trunk-name");
-    const proxyInput = document.getElementById("trunk-proxy");
-    const directionInput = document.getElementById("trunk-direction");
-    const inPrefixInput = document.getElementById("trunk-in-prefix");
-    const inDidInput = document.getElementById("inbound-did-pattern");
-    const inModeInput = document.getElementById("trunk-inbound-match-mode");
-    const outPrefixInput = document.getElementById("trunk-out-prefix");
-    const outDialInput = document.getElementById("outbound-dial-pattern");
-    const outModeInput = document.getElementById("trunk-outbound-match-mode");
-    if (!nameInput || !proxyInput || !directionInput) {
-      return;
-    }
-    nameInput.value = trunk.name || "";
-    proxyInput.value = trunk.proxy || "";
-    directionInput.value = (trunk.direction || "inbound").toLowerCase();
-    if (inPrefixInput) inPrefixInput.value = trunk.in_prefix || "";
-    if (inDidInput) inDidInput.value = trunk.inbound_did_pattern || "^(1?\\d{10})$";
-    if (inModeInput) inModeInput.value = trunk.inbound_match_mode || "exact";
-    if (outPrefixInput) outPrefixInput.value = trunk.outbound_prefix || "";
-    if (outDialInput) outDialInput.value = trunk.dialout_pattern || "^(1?\\d{10})$";
-    if (outModeInput) outModeInput.value = trunk.outbound_match_mode || "prefix";
-    applyTrunkDirectionVisibility();
-    nameInput.scrollIntoView({ behavior: "smooth", block: "center" });
-    nameInput.focus();
-  }
-
-  function editTrunkFromButton(button) {
-    if (!button) {
-      return;
-    }
-    editTrunk({
-      name: button.dataset.name || "",
-      proxy: button.dataset.proxy || "",
-      direction: button.dataset.direction || "inbound",
-      in_prefix: button.dataset.inPrefix || "",
-      inbound_did_pattern: button.dataset.inboundDidPattern || "",
-      inbound_match_mode: button.dataset.inboundMatchMode || "exact",
-      outbound_prefix: button.dataset.outPrefix || "",
-      dialout_pattern: button.dataset.dialoutPattern || "",
-      outbound_match_mode: button.dataset.outboundMatchMode || "prefix",
-    });
-  }
-
-  function applyTrunkDirectionVisibility() {
-    const direction = document.getElementById("trunk-direction");
-    const inFields = document.getElementById("trunk-inbound-fields");
-    const outFields = document.getElementById("trunk-outbound-fields");
-    const inDid = document.getElementById("inbound-did-pattern");
-    const outDial = document.getElementById("outbound-dial-pattern");
-    if (!direction || !inFields || !outFields || !inDid || !outDial) {
-      return;
-    }
-    const mode = (direction.value || "").toLowerCase();
-    const showInbound = mode === "inbound";
-    const showOutbound = mode === "outbound";
-    inFields.style.display = showInbound ? "contents" : "none";
-    outFields.style.display = showOutbound ? "contents" : "none";
-    inDid.required = showInbound;
-    outDial.required = showOutbound;
-  }
-
   document.addEventListener("DOMContentLoaded", function () {
-    const direction = document.getElementById("trunk-direction");
-    if (direction) {
-      direction.addEventListener("change", applyTrunkDirectionVisibility);
-    }
     const fileType = document.getElementById("dp-file-type");
     const appInput = document.getElementById("dp-application");
     if (fileType) {
@@ -290,14 +123,8 @@
     if (appInput) {
       appInput.addEventListener("change", refreshDialplanActionOptions);
     }
-    document.querySelectorAll(".trunk-edit-btn").forEach(function (button) {
-      button.addEventListener("click", function () {
-        editTrunkFromButton(button);
-      });
-    });
     refreshDialplanActionOptions();
     applyDialplanTypeVisibility();
-    applyTrunkDirectionVisibility();
   });
 </script>
 {% endblock %}
