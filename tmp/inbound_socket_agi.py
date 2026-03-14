@@ -59,6 +59,9 @@ AI_WS_LOCAL_PROMPT_ENABLED = os.getenv("AI_WS_LOCAL_PROMPT_ENABLED", "0").strip(
 }
 AI_REALTIME_DIRECT_MODE = os.getenv("AI_REALTIME_DIRECT_MODE", "1").strip().casefold() in {"1", "true", "yes", "on"}
 AI_REALTIME_MAX_SECONDS = _env_int("AI_REALTIME_MAX_SECONDS", 900, 30)
+AI_PLAY_CONNECT_PROMPT = os.getenv("AI_PLAY_CONNECT_PROMPT", "0").strip().casefold() in {"1", "true", "yes", "on"}
+AI_AUTO_ROUTE_IMMEDIATE = os.getenv("AI_AUTO_ROUTE_IMMEDIATE", "1").strip().casefold() in {"1", "true", "yes", "on"}
+AI_AUTO_ROUTE_DEFAULT_INTENT = os.getenv("AI_AUTO_ROUTE_DEFAULT_INTENT", "sales").strip().casefold() or "sales"
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_TTS_VOICE_ID = os.getenv("ELEVENLABS_TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()
@@ -843,7 +846,8 @@ def route_to_voicemail(conn: socket.socket, queue_cfg: dict[str, str], intent: s
 
 
 def route_to_queue(conn: socket.socket, call_uuid: str, intent: str, queue_cfg: dict[str, str]) -> None:
-    speak(conn, intent_connect_text(intent), intent_prompt(intent), cacheable=True)
+    if AI_PLAY_CONNECT_PROMPT:
+        speak(conn, intent_connect_text(intent), intent_prompt(intent), cacheable=True)
     # Keep outbound leg in narrowband telephony codecs for interop.
     send_execute(conn, "set", "absolute_codec_string=PCMU,PCMA")
     send_execute(conn, "set", "continue_on_fail=true")
@@ -878,65 +882,18 @@ def route_to_queue(conn: socket.socket, call_uuid: str, intent: str, queue_cfg: 
     attempt_seconds = max(8, QUEUE_ATTEMPT_SECONDS)
 
     if dial_targets:
-        started = time.time()
-        while time.time() - started < total_wait and uuid_exists(conn, call_uuid):
-            remaining = int(total_wait - (time.time() - started))
-            per_try = max(5, min(attempt_seconds, remaining))
-            if per_try <= 0:
-                break
-            send_execute(conn, "set", f"originate_timeout={per_try}")
-            had_attempt = False
-
-            if ring_mode == "sequential":
-                for target in dial_targets:
-                    if int(total_wait - (time.time() - started)) <= 0:
-                        break
-                    had_attempt = True
-                    send_execute(conn, "set", f"originate_timeout={per_try}")
-                    reply = send_execute(conn, "bridge", target)
-                    dispo = uuid_getvar(conn, call_uuid, "originate_disposition")
-                    bhc = uuid_getvar(conn, call_uuid, "bridge_hangup_cause")
-                    log(
-                        f"bridge_reply={reply.splitlines()[:2]} intent={intent} "
-                        f"queue={queue_cfg.get('number','')} dialstring={target} "
-                        f"originate_disposition={dispo} bridge_hangup_cause={bhc}"
-                    )
-                    # If call no longer exists, handoff happened.
-                    if not uuid_exists(conn, call_uuid):
-                        return
-                    # If answered leg then completed, do not keep retrying.
-                    if dispo.casefold() in {"success", "answered"}:
-                        return
-                    # Some carriers report bridge completion only via hangup cause.
-                    if bhc.casefold() in {"normal_clearing", "normal_unspecified"}:
-                        return
-                    if QUEUE_RETRY_DELAY_MS > 0:
-                        time.sleep(QUEUE_RETRY_DELAY_MS / 1000.0)
-            else:
-                had_attempt = True
-                dialstring = ",".join(dial_targets)
-                reply = send_execute(conn, "bridge", dialstring)
-                dispo = uuid_getvar(conn, call_uuid, "originate_disposition")
-                bhc = uuid_getvar(conn, call_uuid, "bridge_hangup_cause")
-                log(
-                    f"bridge_reply={reply.splitlines()[:2]} intent={intent} "
-                    f"queue={queue_cfg.get('number','')} dialstring={dialstring} "
-                    f"originate_disposition={dispo} bridge_hangup_cause={bhc}"
-                )
-                if not uuid_exists(conn, call_uuid):
-                    return
-                if dispo.casefold() in {"success", "answered"}:
-                    return
-                if bhc.casefold() in {"normal_clearing", "normal_unspecified"}:
-                    return
-                if QUEUE_RETRY_DELAY_MS > 0:
-                    time.sleep(QUEUE_RETRY_DELAY_MS / 1000.0)
-
-            if not had_attempt:
-                break
-
-        if route_to_voicemail(conn, queue_cfg, intent):
-            return
+        per_try = max(5, min(attempt_seconds, total_wait))
+        send_execute(conn, "set", f"originate_timeout={per_try}")
+        dialstring = dial_targets[0] if ring_mode == "sequential" else ",".join(dial_targets)
+        reply = send_execute(conn, "bridge", dialstring)
+        dispo = uuid_getvar(conn, call_uuid, "originate_disposition")
+        bhc = uuid_getvar(conn, call_uuid, "bridge_hangup_cause")
+        log(
+            f"bridge_reply={reply.splitlines()[:2]} intent={intent} "
+            f"queue={queue_cfg.get('number','')} dialstring={dialstring} "
+            f"originate_disposition={dispo} bridge_hangup_cause={bhc}"
+        )
+        return
 
     number = queue_cfg.get("number", "")
     if number:
@@ -1320,7 +1277,14 @@ def handle_call(conn: socket.socket, addr) -> None:
                     prompt_wav=PROMPT_RETRY,
                 )
         else:
-            intent, transcript, target_cfg = collect_intent_with_retry(conn, call_uuid, caller, dst)
+            if AI_AUTO_ROUTE_IMMEDIATE:
+                forced_intent = AI_AUTO_ROUTE_DEFAULT_INTENT if AI_AUTO_ROUTE_DEFAULT_INTENT in {"sales", "support", "billing"} else "sales"
+                target_cfg = queue_config_by_intent(forced_intent)
+                intent = forced_intent
+                transcript = ""
+                log(f"auto_route_immediate uuid={call_uuid} intent={intent} enabled=1")
+            else:
+                intent, transcript, target_cfg = collect_intent_with_retry(conn, call_uuid, caller, dst)
 
         if intent in {"sales", "support", "billing"} and target_cfg:
             route_to_queue(conn, call_uuid, intent, target_cfg)
