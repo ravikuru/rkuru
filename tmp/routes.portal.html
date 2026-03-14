@@ -8,8 +8,8 @@
   <div class="card">
     <h3>Trunk Settings</h3>
     <form method="post" action="/routes/trunks" class="grid-form" id="trunk-form">
-      <label>Trunk ID<input name="name" placeholder="carrier_a" required /></label>
-      <label>Proxy / SIP Host/Ip address<input name="proxy" placeholder="64.34.222.236 or sip.carrier.com" required /></label>
+      <label>Trunk ID<input id="trunk-name" name="name" placeholder="carrier_a" required /></label>
+      <label>Proxy / SIP Host/Ip address<input id="trunk-proxy" name="proxy" placeholder="64.34.222.236 or sip.carrier.com" required /></label>
       <label>Trunk Direction (in/out)
         <select name="direction" id="trunk-direction">
           <option value="inbound">inbound</option>
@@ -17,10 +17,10 @@
         </select>
       </label>
       <div id="trunk-inbound-fields">
-        <label>In prefix<input name="in_prefix" placeholder="Enter inbound prefix digits" /></label>
+        <label>In prefix<input id="trunk-in-prefix" name="in_prefix" placeholder="Enter inbound prefix digits" /></label>
         <label>Inbound DID / Pattern<input id="inbound-did-pattern" name="did_pattern" value="^(1?\d{10})$" placeholder="4163501959 or ^647\\d{7}$" /></label>
         <label>Match Mode
-          <select name="inbound_match_mode">
+          <select id="trunk-inbound-match-mode" name="inbound_match_mode">
             <option value="exact">exact</option>
             <option value="prefix">prefix</option>
             <option value="regex">regex</option>
@@ -28,10 +28,10 @@
         </label>
       </div>
       <div id="trunk-outbound-fields">
-        <label>Out prefix<input name="out_prefix" placeholder="Enter outbound prefix digits" /></label>
+        <label>Out prefix<input id="trunk-out-prefix" name="out_prefix" placeholder="Enter outbound prefix digits" /></label>
         <label>Dialout Number / Pattern<input id="outbound-dial-pattern" name="dial_pattern" value="^(1?\d{10})$" placeholder="9 or ^00\\d+$" /></label>
         <label>Match Mode
-          <select name="outbound_match_mode">
+          <select id="trunk-outbound-match-mode" name="outbound_match_mode">
             <option value="prefix">prefix</option>
             <option value="exact">exact</option>
             <option value="regex">regex</option>
@@ -48,7 +48,7 @@
 <div class="card">
   <h3>Configured Trunks</h3>
   <table>
-    <tr><th>Name</th><th>Direction</th><th>Proxy</th><th>In Prefix</th><th>Inbound DID / Pattern</th><th>In Match</th><th>Out Prefix</th><th>Dialout Number / Pattern</th><th>Out Match</th><th>Enabled</th><th>Created</th></tr>
+    <tr><th>Name</th><th>Direction</th><th>Proxy</th><th>In Prefix</th><th>Inbound DID / Pattern</th><th>In Match</th><th>Out Prefix</th><th>Dialout Number / Pattern</th><th>Out Match</th><th>Enabled</th><th>Created</th><th>Actions</th></tr>
     {% for t in trunks %}
     <tr>
       <td>{{ t.name }}</td>
@@ -62,11 +62,60 @@
       <td>{{ t.outbound_match_mode or "-" }}</td>
       <td>{{ t.enabled }}</td>
       <td>{{ t.created_at }}</td>
+      <td>
+        <button
+          type="button"
+          onclick='editTrunk({{ {
+            "name": t.name,
+            "proxy": t.proxy,
+            "direction": t.direction,
+            "in_prefix": t.in_prefix,
+            "inbound_did_pattern": t.inbound_did_pattern,
+            "inbound_match_mode": t.inbound_match_mode,
+            "outbound_prefix": t.outbound_prefix,
+            "dialout_pattern": t.dialout_pattern,
+            "outbound_match_mode": t.outbound_match_mode
+          } | tojson }})'
+        >
+          Edit
+        </button>
+        <form method="post" action="/routes/trunks/delete" style="display:inline" onsubmit="return confirm('Remove trunk {{ t.name }}?');">
+          <input type="hidden" name="name" value="{{ t.name }}" />
+          <button type="submit">Remove</button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </table>
 </div>
 <script>
+  function editTrunk(trunk) {
+    const nameInput = document.getElementById("trunk-name");
+    const proxyInput = document.getElementById("trunk-proxy");
+    const directionInput = document.getElementById("trunk-direction");
+    const inPrefixInput = document.getElementById("trunk-in-prefix");
+    const inDidInput = document.getElementById("inbound-did-pattern");
+    const inModeInput = document.getElementById("trunk-inbound-match-mode");
+    const outPrefixInput = document.getElementById("trunk-out-prefix");
+    const outDialInput = document.getElementById("outbound-dial-pattern");
+    const outModeInput = document.getElementById("trunk-outbound-match-mode");
+    if (!nameInput || !proxyInput || !directionInput) {
+      return;
+    }
+    nameInput.value = trunk.name || "";
+    proxyInput.value = trunk.proxy || "";
+    directionInput.value = (trunk.direction || "inbound").toLowerCase();
+    if (inPrefixInput) inPrefixInput.value = trunk.in_prefix || "";
+    if (inDidInput) inDidInput.value = trunk.inbound_did_pattern || "^(1?\\d{10})$";
+    if (inModeInput) inModeInput.value = trunk.inbound_match_mode || "exact";
+    if (outPrefixInput) outPrefixInput.value = trunk.outbound_prefix || "";
+    if (outDialInput) outDialInput.value = trunk.dialout_pattern || "^(1?\\d{10})$";
+    if (outModeInput) outModeInput.value = trunk.outbound_match_mode || "prefix";
+    applyTrunkDirectionVisibility();
+    nameInput.scrollIntoView({ behavior: "smooth", block: "center" });
+    nameInput.focus();
+  }
+
   function applyTrunkDirectionVisibility() {
     const direction = document.getElementById("trunk-direction");
     const inFields = document.getElementById("trunk-inbound-fields");

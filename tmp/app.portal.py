@@ -2113,6 +2113,55 @@ def route_trunk_create(
     )
 
 
+@app.post("/routes/trunks/delete", response_class=HTMLResponse)
+def route_trunk_delete(
+    request: Request,
+    name: str = Form(...),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+
+    trunk_name = name.strip()
+    if not trunk_name:
+        with closing(db_conn()) as conn:
+            payload = routes_page_payload(conn)
+        return templates.TemplateResponse(
+            "routes.html",
+            {"request": request, "user": user, **payload, "message": None, "error": "Trunk name is required for delete."},
+        )
+
+    with closing(db_conn()) as conn:
+        existing = conn.execute("SELECT name FROM trunks WHERE name = ?", (trunk_name,)).fetchone()
+        if existing is None:
+            payload = routes_page_payload(conn)
+            return templates.TemplateResponse(
+                "routes.html",
+                {"request": request, "user": user, **payload, "message": None, "error": f"Trunk {trunk_name} was not found."},
+            )
+
+        # Keep route tables clean when a trunk is removed.
+        conn.execute("DELETE FROM inbound_routes WHERE inbound_trunk_name = ?", (trunk_name,))
+        conn.execute("DELETE FROM outbound_routes WHERE trunk_name = ?", (trunk_name,))
+        conn.execute("DELETE FROM trunks WHERE name = ?", (trunk_name,))
+        conn.commit()
+        payload = routes_page_payload(conn)
+
+    sync_trunks_to_freeswitch()
+    sync_inbound_routes_dialplan()
+    sync_outbound_routes_dialplan()
+    return templates.TemplateResponse(
+        "routes.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": f"Trunk {trunk_name} removed.",
+            "error": None,
+        },
+    )
+
+
 @app.post("/routes/inbound", response_class=HTMLResponse)
 def inbound_route_create(
     request: Request,
