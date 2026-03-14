@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title or "Callture Portal" }}</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260314c" />
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+  <header class="topbar">
+    {% if user %}
+    <nav class="main-nav">
+      <a href="/dashboard">Home</a>
+      <details class="dropdown">
+        <summary class="dropbtn">Accounts</summary>
+        <div class="dropdown-menu">
+          <a href="/agents">Accounts</a>
+          <a href="/settings">Advanced</a>
+        </div>
+      </details>
+      <a href="/routes">Dialplan</a>
+      <details class="dropdown">
+        <summary class="dropbtn">Applications</summary>
+        <div class="dropdown-menu">
+          <a href="/queues">Queues</a>
+          <a href="/agents">Agents</a>
+          <a href="/routes">Routes</a>
+          <a href="/fax">Fax In/Out</a>
+          <a href="/conference">Conference</a>
+          <a href="/vpbx">vPBX</a>
+          <a href="/devices">Device Registration</a>
+        </div>
+      </details>
+      <a href="/dashboard">Status</a>
+      <form method="post" action="/logout" style="display:inline">
+        <button type="submit" class="link-btn">Logout</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
+
