@@ -2172,6 +2172,10 @@ def dialplan_route_create(
     application: str = Form("queue"),
     action_value: str = Form(""),
     route_id: str = Form(""),
+    route_kind: str = Form("inbound"),
+    outbound_pattern: str = Form(""),
+    outbound_match_mode: str = Form("prefix"),
+    outbound_trunk_name: str = Form(""),
     enabled: str = Form("true"),
 ):
     user, denied = require_admin_or_redirect(request)
@@ -2182,18 +2186,131 @@ def dialplan_route_create(
     if route_type not in {"inbound", "outbound"}:
         route_type = "inbound"
 
-    # This form is for DID->application routing.
+    edit_route_id = int(route_id) if str(route_id or "").strip().isdigit() else 0
+    edit_kind = (route_kind or "").strip().lower()
+    if edit_kind not in {"inbound", "outbound"}:
+        edit_kind = route_type
+
     if route_type == "outbound":
+        dial_value = (outbound_pattern or "").strip()
+        mode_value = normalize_match_mode(outbound_match_mode, outbound=True)
+        trunk_value = (outbound_trunk_name or "").strip()
+        if not dial_value:
+            with closing(db_conn()) as conn:
+                payload = routes_page_payload(conn)
+            return templates.TemplateResponse(
+                "routes.html",
+                {
+                    "request": request,
+                    "user": user,
+                    **payload,
+                    "message": None,
+                    "error": "Dialout Number / Pattern is required for outbound file type.",
+                },
+            )
+        if not trunk_value:
+            with closing(db_conn()) as conn:
+                payload = routes_page_payload(conn)
+            return templates.TemplateResponse(
+                "routes.html",
+                {
+                    "request": request,
+                    "user": user,
+                    **payload,
+                    "message": None,
+                    "error": "Outbound trunk is required.",
+                },
+            )
         with closing(db_conn()) as conn:
+            trunk = conn.execute(
+                "SELECT name, direction, enabled FROM trunks WHERE name = ?",
+                (trunk_value,),
+            ).fetchone()
+            if trunk is None:
+                payload = routes_page_payload(conn)
+                return templates.TemplateResponse(
+                    "routes.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"Outbound trunk {trunk_value} does not exist.",
+                    },
+                )
+            trunk_direction = normalize_trunk_direction(str(trunk["direction"] or "outbound"))
+            if not bool(trunk["enabled"]) or trunk_direction not in {"outbound", "both"}:
+                payload = routes_page_payload(conn)
+                return templates.TemplateResponse(
+                    "routes.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"Outbound trunk {trunk_value} is not enabled for outbound usage.",
+                    },
+                )
+            route_name = f"Dialplan Out {dial_value} -> trunk:{trunk_value}"
+            if edit_route_id and edit_kind == "outbound":
+                existing = conn.execute("SELECT id FROM outbound_routes WHERE id = ?", (edit_route_id,)).fetchone()
+                if existing is None:
+                    payload = routes_page_payload(conn)
+                    return templates.TemplateResponse(
+                        "routes.html",
+                        {
+                            "request": request,
+                            "user": user,
+                            **payload,
+                            "message": None,
+                            "error": f"Outbound route {edit_route_id} not found for edit.",
+                        },
+                    )
+                conn.execute(
+                    """
+                    UPDATE outbound_routes
+                    SET name = ?, dial_pattern = ?, match_mode = ?, trunk_name = ?, enabled = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        route_name,
+                        dial_value,
+                        mode_value,
+                        trunk_value,
+                        1 if as_bool(enabled) else 0,
+                        edit_route_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO outbound_routes(name, dial_pattern, match_mode, trunk_name, enabled, created_at)
+                    VALUES(?,?,?,?,?,?)
+                    """,
+                    (
+                        route_name,
+                        dial_value,
+                        mode_value,
+                        trunk_value,
+                        1 if as_bool(enabled) else 0,
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+            conn.commit()
             payload = routes_page_payload(conn)
+
+        sync_outbound_routes_dialplan()
         return templates.TemplateResponse(
             "routes.html",
             {
                 "request": request,
                 "user": user,
                 **payload,
-                "message": None,
-                "error": "Outbound route save is not used in this form. Use inbound for DID to application mapping.",
+                "message": (
+                    f"Dialplan {'updated' if (edit_route_id and edit_kind == 'outbound') else 'saved'}: "
+                    f"outbound {dial_value} (trunk: {trunk_value})"
+                ),
+                "error": None,
             },
         )
 
@@ -2255,8 +2372,6 @@ def dialplan_route_create(
     if dest_type == "fax" and not dest_value:
         # Default fax action to DID if no explicit fax inbound DID chosen.
         dest_value = did_value
-    edit_route_id = int(route_id) if str(route_id or "").strip().isdigit() else 0
-
     with closing(db_conn()) as conn:
         trunk_filter = (inbound_trunk_name or "").strip()
         if trunk_filter:
@@ -2345,7 +2460,7 @@ def dialplan_route_create(
                 dest_value = did_value
 
         route_name = f"Dialplan In {did_value} -> {dest_type}:{dest_value}"
-        if edit_route_id:
+        if edit_route_id and edit_kind == "inbound":
             existing = conn.execute("SELECT id FROM inbound_routes WHERE id = ?", (edit_route_id,)).fetchone()
             if existing is None:
                 payload = routes_page_payload(conn)
@@ -2407,7 +2522,7 @@ def dialplan_route_create(
             "user": user,
             **payload,
             "message": (
-                f"Dialplan {'updated' if edit_route_id else 'saved'}: inbound {did_value} "
+                f"Dialplan {'updated' if (edit_route_id and edit_kind == 'inbound') else 'saved'}: inbound {did_value} "
                 f"{'(all trunks)' if not trunk_filter else f'(trunk: {trunk_filter})'} "
                 f"-> {dest_type} {dest_value}"
             ),

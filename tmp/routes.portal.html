@@ -8,6 +8,7 @@
   <h3>Dialplan File</h3>
   <form method="post" action="/routes/dialplan" class="grid-form" id="dialplan-form">
     <input type="hidden" id="dp-route-id" name="route_id" value="" />
+    <input type="hidden" id="dp-route-kind" name="route_kind" value="inbound" />
     <label>File Type (Inbound/Outbound)
       <select id="dp-file-type" name="file_type">
         <option value="inbound">inbound</option>
@@ -41,12 +42,32 @@
         <select id="dp-action-value" name="action_value"></select>
       </label>
     </div>
+    <div id="dp-outbound-fields" style="display:none">
+      <label>Dialout Number / Pattern
+        <input id="dp-outbound-pattern" name="outbound_pattern" placeholder="9 or ^00\\d+$" />
+      </label>
+      <label>Match Mode
+        <select id="dp-outbound-match-mode" name="outbound_match_mode">
+          <option value="prefix">prefix</option>
+          <option value="exact">exact</option>
+          <option value="regex">regex</option>
+        </select>
+      </label>
+      <label>Outbound Trunk
+        <select id="dp-outbound-trunk" name="outbound_trunk_name">
+          <option value="">select trunk</option>
+          {% for t in outbound_trunks %}
+          <option value="{{ t.name }}">{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
     <input type="hidden" name="enabled" value="true" />
     <button id="dp-save-btn" type="submit">Save Dialplan</button>
     <button id="dp-cancel-edit-btn" type="button" style="display:none">Cancel Edit</button>
   </form>
   <p class="hint">Inbound calls to the destination number will go to the selected application/action.</p>
-  <p class="hint" id="dp-outbound-note" style="display:none">Outbound option is reserved. Use inbound for DID to application routing.</p>
+  <p class="hint" id="dp-outbound-note" style="display:none">Outbound uses one selected trunk and is editable from the routes list.</p>
 </div>
 
 <div class="card">
@@ -101,7 +122,18 @@
       <td>-</td>
       <td>{{ r.enabled }}</td>
       <td>{{ r.created_at }}</td>
-      <td>-</td>
+      <td>
+        <button
+          type="button"
+          class="dialplan-edit-out-btn"
+          data-route-id="{{ r.id }}"
+          data-dial-pattern="{{ r.dial_pattern }}"
+          data-match-mode="{{ r.match_mode }}"
+          data-trunk-name="{{ r.trunk_name }}"
+        >
+          Edit
+        </button>
+      </td>
     </tr>
     {% endfor %}
   </table>
@@ -177,17 +209,27 @@
   function applyDialplanTypeVisibility() {
     const fileType = document.getElementById("dp-file-type");
     const inboundFields = document.getElementById("dp-inbound-fields");
+    const outboundFields = document.getElementById("dp-outbound-fields");
     const outboundNote = document.getElementById("dp-outbound-note");
+    const routeKind = document.getElementById("dp-route-kind");
     const destination = document.getElementById("dp-destination-number");
+    const outboundPattern = document.getElementById("dp-outbound-pattern");
+    const outboundMatchMode = document.getElementById("dp-outbound-match-mode");
+    const outboundTrunk = document.getElementById("dp-outbound-trunk");
     const application = document.getElementById("dp-application");
     const action = document.getElementById("dp-action-value");
-    if (!fileType || !inboundFields || !outboundNote || !destination || !application || !action) {
+    if (!fileType || !inboundFields || !outboundFields || !outboundNote || !routeKind || !destination || !outboundPattern || !outboundMatchMode || !outboundTrunk || !application || !action) {
       return;
     }
     const isInbound = (fileType.value || "").toLowerCase() === "inbound";
     inboundFields.style.display = isInbound ? "contents" : "none";
+    outboundFields.style.display = isInbound ? "none" : "contents";
     outboundNote.style.display = isInbound ? "none" : "block";
+    routeKind.value = isInbound ? "inbound" : "outbound";
     destination.required = isInbound;
+    outboundPattern.required = !isInbound;
+    outboundMatchMode.required = !isInbound;
+    outboundTrunk.required = !isInbound;
     application.required = isInbound;
     action.required = isInbound;
   }
@@ -202,6 +244,7 @@
 
   function editDialplanFromButton(button) {
     const routeId = document.getElementById("dp-route-id");
+    const routeKind = document.getElementById("dp-route-kind");
     const fileType = document.getElementById("dp-file-type");
     const countryCode = document.getElementById("dp-country-code");
     const destination = document.getElementById("dp-destination-number");
@@ -209,7 +252,7 @@
     const appInput = document.getElementById("dp-application");
     const saveBtn = document.getElementById("dp-save-btn");
     const cancelBtn = document.getElementById("dp-cancel-edit-btn");
-    if (!button || !routeId || !fileType || !countryCode || !destination || !inboundTrunk || !appInput || !saveBtn || !cancelBtn) {
+    if (!button || !routeId || !routeKind || !fileType || !countryCode || !destination || !inboundTrunk || !appInput || !saveBtn || !cancelBtn) {
       return;
     }
 
@@ -223,6 +266,7 @@
     }
 
     routeId.value = button.dataset.routeId || "";
+    routeKind.value = "inbound";
     fileType.value = "inbound";
     inboundTrunk.value = button.dataset.inboundTrunkName || "";
     appInput.value = appValueFromDestinationType(button.dataset.destinationType || "");
@@ -235,23 +279,56 @@
     destination.focus();
   }
 
+  function editOutboundDialplanFromButton(button) {
+    const routeId = document.getElementById("dp-route-id");
+    const routeKind = document.getElementById("dp-route-kind");
+    const fileType = document.getElementById("dp-file-type");
+    const outboundPattern = document.getElementById("dp-outbound-pattern");
+    const outboundMode = document.getElementById("dp-outbound-match-mode");
+    const outboundTrunk = document.getElementById("dp-outbound-trunk");
+    const saveBtn = document.getElementById("dp-save-btn");
+    const cancelBtn = document.getElementById("dp-cancel-edit-btn");
+    if (!button || !routeId || !routeKind || !fileType || !outboundPattern || !outboundMode || !outboundTrunk || !saveBtn || !cancelBtn) {
+      return;
+    }
+    routeId.value = button.dataset.routeId || "";
+    routeKind.value = "outbound";
+    fileType.value = "outbound";
+    outboundPattern.value = button.dataset.dialPattern || "";
+    outboundMode.value = button.dataset.matchMode || "prefix";
+    outboundTrunk.value = button.dataset.trunkName || "";
+    applyDialplanTypeVisibility();
+    saveBtn.textContent = "Update Dialplan";
+    cancelBtn.style.display = "inline-block";
+    outboundPattern.scrollIntoView({ behavior: "smooth", block: "center" });
+    outboundPattern.focus();
+  }
+
   function resetDialplanForm() {
     const form = document.getElementById("dialplan-form");
     const routeId = document.getElementById("dp-route-id");
+    const routeKind = document.getElementById("dp-route-kind");
     const fileType = document.getElementById("dp-file-type");
     const countryCode = document.getElementById("dp-country-code");
     const destination = document.getElementById("dp-destination-number");
     const inboundTrunk = document.getElementById("dp-inbound-trunk");
     const appInput = document.getElementById("dp-application");
+    const outboundPattern = document.getElementById("dp-outbound-pattern");
+    const outboundMode = document.getElementById("dp-outbound-match-mode");
+    const outboundTrunk = document.getElementById("dp-outbound-trunk");
     const saveBtn = document.getElementById("dp-save-btn");
     const cancelBtn = document.getElementById("dp-cancel-edit-btn");
     if (form) form.reset();
     if (routeId) routeId.value = "";
+    if (routeKind) routeKind.value = "inbound";
     if (fileType) fileType.value = "inbound";
     if (countryCode) countryCode.value = "1";
     if (destination) destination.value = "";
     if (inboundTrunk) inboundTrunk.value = "";
     if (appInput) appInput.value = "queue";
+    if (outboundPattern) outboundPattern.value = "";
+    if (outboundMode) outboundMode.value = "prefix";
+    if (outboundTrunk) outboundTrunk.value = "";
     refreshDialplanActionOptions();
     if (saveBtn) saveBtn.textContent = "Save Dialplan";
     if (cancelBtn) cancelBtn.style.display = "none";
@@ -274,6 +351,11 @@
     document.querySelectorAll(".dialplan-edit-btn").forEach(function (button) {
       button.addEventListener("click", function () {
         editDialplanFromButton(button);
+      });
+    });
+    document.querySelectorAll(".dialplan-edit-out-btn").forEach(function (button) {
+      button.addEventListener("click", function () {
+        editOutboundDialplanFromButton(button);
       });
     });
     refreshDialplanActionOptions();
