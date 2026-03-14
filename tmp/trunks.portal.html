@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Trunk</h2>
+{% if message %}<p class="ok">{{ message }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="grid">
+  <div class="card">
+    <h3>Create Inbound Trunk</h3>
+    <form method="post" action="/trunks/inbound" class="grid-form" id="inbound-trunk-form">
+      <label>Trunk ID<input id="in-name" name="name" placeholder="carrier_in_1" required /></label>
+      <label>Proxy / SIP Host/Ip address<input id="in-proxy" name="proxy" placeholder="64.34.222.236 or sip.carrier.com" required /></label>
+      <label>In prefix<input id="in-prefix" name="in_prefix" placeholder="optional inbound prefix" /></label>
+      <label>Inbound DID / Pattern<input id="in-pattern" name="inbound_did_pattern" value="^(1?\\d{10})$" /></label>
+      <label>Match Mode
+        <select id="in-mode" name="inbound_match_mode">
+          <option value="exact">exact</option>
+          <option value="prefix">prefix</option>
+          <option value="regex">regex</option>
+        </select>
+      </label>
+      <label>Enabled
+        <select id="in-enabled" name="enabled">
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+      </label>
+      <button id="in-save-btn" type="submit">Save Inbound Trunk</button>
+      <button id="in-cancel-btn" type="button" style="display:none">Cancel Edit</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Create Outbound Trunk</h3>
+    <form method="post" action="/trunks/outbound" class="grid-form" id="outbound-trunk-form">
+      <label>Trunk ID<input id="out-name" name="name" placeholder="carrier_out_1" required /></label>
+      <label>Proxy / SIP Host/Ip address<input id="out-proxy" name="proxy" placeholder="64.34.222.236 or sip.carrier.com" required /></label>
+      <label>Out prefix<input id="out-prefix" name="out_prefix" placeholder="optional outbound prefix" /></label>
+      <label>Dialout Number / Pattern<input id="out-pattern" name="dialout_pattern" value="^1\\d{10}$" /></label>
+      <label>Match Mode
+        <select id="out-mode" name="outbound_match_mode">
+          <option value="regex">regex</option>
+          <option value="prefix">prefix</option>
+          <option value="exact">exact</option>
+        </select>
+      </label>
+      <label>Enabled
+        <select id="out-enabled" name="enabled">
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+      </label>
+      <button id="out-save-btn" type="submit">Save Outbound Trunk</button>
+      <button id="out-cancel-btn" type="button" style="display:none">Cancel Edit</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Configured Trunks</h3>
+  <table>
+    <tr>
+      <th>Trunk ID</th>
+      <th>Direction</th>
+      <th>Proxy</th>
+      <th>In Prefix</th>
+      <th>Inbound DID / Pattern</th>
+      <th>In Match</th>
+      <th>Out Prefix</th>
+      <th>Dialout Number / Pattern</th>
+      <th>Out Match</th>
+      <th>Enabled</th>
+      <th>Created</th>
+      <th>Actions</th>
+    </tr>
+    {% for t in trunks %}
+    <tr>
+      <td>{{ t.name }}</td>
+      <td>{{ t.direction }}</td>
+      <td>{{ t.proxy }}</td>
+      <td>{{ t.in_prefix or "-" }}</td>
+      <td>{{ t.inbound_did_pattern or "-" }}</td>
+      <td>{{ t.inbound_match_mode or "-" }}</td>
+      <td>{{ t.outbound_prefix or "-" }}</td>
+      <td>{{ t.dialout_pattern or "-" }}</td>
+      <td>{{ t.outbound_match_mode or "-" }}</td>
+      <td>{{ t.enabled }}</td>
+      <td>{{ t.created_at }}</td>
+      <td>
+        <button
+          type="button"
+          class="trunk-edit-btn"
+          data-name="{{ t.name }}"
+          data-direction="{{ t.direction }}"
+          data-proxy="{{ t.proxy }}"
+          data-in-prefix="{{ t.in_prefix or '' }}"
+          data-in-pattern="{{ t.inbound_did_pattern or '' }}"
+          data-in-mode="{{ t.inbound_match_mode or 'exact' }}"
+          data-out-prefix="{{ t.outbound_prefix or '' }}"
+          data-out-pattern="{{ t.dialout_pattern or '' }}"
+          data-out-mode="{{ t.outbound_match_mode or 'regex' }}"
+          data-enabled="{{ 'true' if t.enabled else 'false' }}"
+        >
+          Edit
+        </button>
+        <form method="post" action="/trunks/delete" style="display:inline" onsubmit="return confirm('Remove trunk {{ t.name }}?');">
+          <input type="hidden" name="name" value="{{ t.name }}" />
+          <button type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script>
+  function editInboundTrunk(btn) {
+    const name = document.getElementById("in-name");
+    const proxy = document.getElementById("in-proxy");
+    const prefix = document.getElementById("in-prefix");
+    const pattern = document.getElementById("in-pattern");
+    const mode = document.getElementById("in-mode");
+    const enabled = document.getElementById("in-enabled");
+    const saveBtn = document.getElementById("in-save-btn");
+    const cancelBtn = document.getElementById("in-cancel-btn");
+    if (!name || !proxy || !prefix || !pattern || !mode || !enabled || !saveBtn || !cancelBtn) return;
+    name.value = btn.dataset.name || "";
+    proxy.value = btn.dataset.proxy || "";
+    prefix.value = btn.dataset.inPrefix || "";
+    pattern.value = btn.dataset.inPattern || "^(1?\\d{10})$";
+    mode.value = btn.dataset.inMode || "exact";
+    enabled.value = btn.dataset.enabled || "true";
+    saveBtn.textContent = "Update Inbound Trunk";
+    cancelBtn.style.display = "inline-block";
+    name.scrollIntoView({ behavior: "smooth", block: "center" });
+    name.focus();
+  }
+
+  function editOutboundTrunk(btn) {
+    const name = document.getElementById("out-name");
+    const proxy = document.getElementById("out-proxy");
+    const prefix = document.getElementById("out-prefix");
+    const pattern = document.getElementById("out-pattern");
+    const mode = document.getElementById("out-mode");
+    const enabled = document.getElementById("out-enabled");
+    const saveBtn = document.getElementById("out-save-btn");
+    const cancelBtn = document.getElementById("out-cancel-btn");
+    if (!name || !proxy || !prefix || !pattern || !mode || !enabled || !saveBtn || !cancelBtn) return;
+    name.value = btn.dataset.name || "";
+    proxy.value = btn.dataset.proxy || "";
+    prefix.value = btn.dataset.outPrefix || "";
+    pattern.value = btn.dataset.outPattern || "^1\\d{10}$";
+    mode.value = btn.dataset.outMode || "regex";
+    enabled.value = btn.dataset.enabled || "true";
+    saveBtn.textContent = "Update Outbound Trunk";
+    cancelBtn.style.display = "inline-block";
+    name.scrollIntoView({ behavior: "smooth", block: "center" });
+    name.focus();
+  }
+
+  function resetInboundForm() {
+    const form = document.getElementById("inbound-trunk-form");
+    const saveBtn = document.getElementById("in-save-btn");
+    const cancelBtn = document.getElementById("in-cancel-btn");
+    if (form) form.reset();
+    const pattern = document.getElementById("in-pattern");
+    if (pattern) pattern.value = "^(1?\\d{10})$";
+    if (saveBtn) saveBtn.textContent = "Save Inbound Trunk";
+    if (cancelBtn) cancelBtn.style.display = "none";
+  }
+
+  function resetOutboundForm() {
+    const form = document.getElementById("outbound-trunk-form");
+    const saveBtn = document.getElementById("out-save-btn");
+    const cancelBtn = document.getElementById("out-cancel-btn");
+    if (form) form.reset();
+    const pattern = document.getElementById("out-pattern");
+    const mode = document.getElementById("out-mode");
+    if (pattern) pattern.value = "^1\\d{10}$";
+    if (mode) mode.value = "regex";
+    if (saveBtn) saveBtn.textContent = "Save Outbound Trunk";
+    if (cancelBtn) cancelBtn.style.display = "none";
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    const inCancel = document.getElementById("in-cancel-btn");
+    const outCancel = document.getElementById("out-cancel-btn");
+    if (inCancel) inCancel.addEventListener("click", resetInboundForm);
+    if (outCancel) outCancel.addEventListener("click", resetOutboundForm);
+    document.querySelectorAll(".trunk-edit-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const direction = (btn.dataset.direction || "").toLowerCase();
+        if (direction === "inbound") {
+          editInboundTrunk(btn);
+        } else {
+          editOutboundTrunk(btn);
+        }
+      });
+    });
+  });
+</script>
+{% endblock %}

@@ -2147,6 +2147,94 @@ def routes_page_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def trunks_page_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+    trunks = conn.execute("SELECT * FROM trunks ORDER BY name").fetchall()
+    inbound_trunks = [t for t in trunks if (t["direction"] or "both") in {"inbound", "both"}]
+    outbound_trunks = [t for t in trunks if (t["direction"] or "both") in {"outbound", "both"}]
+    return {
+        "trunks": trunks,
+        "inbound_trunks": inbound_trunks,
+        "outbound_trunks": outbound_trunks,
+    }
+
+
+def upsert_trunk_record(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    proxy: str,
+    direction: str,
+    in_prefix: str,
+    inbound_did_pattern: str,
+    inbound_match_mode: str,
+    out_prefix: str,
+    dialout_pattern: str,
+    outbound_match_mode: str,
+    enabled: bool,
+) -> str:
+    trunk_name = name.strip()
+    proxy_value = proxy.strip()
+    direction_value = normalize_trunk_direction(direction)
+    inbound_prefix_value = in_prefix.strip()
+    did_pattern_value = inbound_did_pattern.strip()
+    outbound_prefix_value = out_prefix.strip()
+    dial_pattern_value = dialout_pattern.strip()
+    inbound_mode_value = normalize_match_mode(inbound_match_mode)
+    outbound_mode_value = normalize_match_mode(outbound_match_mode, outbound=True)
+    default_pattern = r"^(1?\d{10})$"
+    if direction_value == "inbound" and not did_pattern_value:
+        did_pattern_value = default_pattern
+    if direction_value == "outbound" and not dial_pattern_value:
+        dial_pattern_value = default_pattern
+    existing = conn.execute("SELECT * FROM trunks WHERE name = ?", (trunk_name,)).fetchone()
+    created_at = (existing["created_at"] if existing else datetime.now(UTC).isoformat())
+    existing_in_prefix = (existing["in_prefix"] if existing else "") or ""
+    existing_in_pattern = (existing["inbound_did_pattern"] if existing else "") or ""
+    existing_in_mode = (existing["inbound_match_mode"] if existing else "exact") or "exact"
+    existing_out_prefix = (existing["outbound_prefix"] if existing else "") or ""
+    existing_out_pattern = (existing["dialout_pattern"] if existing else "") or ""
+    existing_out_mode = (existing["outbound_match_mode"] if existing else "prefix") or "prefix"
+    save_in_prefix = inbound_prefix_value if direction_value == "inbound" else existing_in_prefix
+    save_in_pattern = did_pattern_value if direction_value == "inbound" else existing_in_pattern
+    save_in_mode = inbound_mode_value if direction_value == "inbound" else existing_in_mode
+    save_out_prefix = outbound_prefix_value if direction_value == "outbound" else existing_out_prefix
+    save_out_pattern = dial_pattern_value if direction_value == "outbound" else existing_out_pattern
+    save_out_mode = outbound_mode_value if direction_value == "outbound" else existing_out_mode
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO trunks(
+            name, proxy, ip_address, username, password, realm, from_domain,
+            direction, in_prefix, inbound_did_pattern, inbound_match_mode,
+            dialout_pattern, outbound_match_mode, outbound_prefix,
+            e164_send_plus, register_enabled, enabled, created_at
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            trunk_name,
+            proxy_value,
+            proxy_value,
+            "",
+            "",
+            "",
+            "",
+            direction_value,
+            save_in_prefix,
+            save_in_pattern,
+            save_in_mode,
+            save_out_pattern,
+            save_out_mode,
+            save_out_prefix,
+            0,
+            0,
+            1 if enabled else 0,
+            created_at,
+        ),
+    )
+    conn.commit()
+    return trunk_name
+
+
 @app.get("/routes", response_class=HTMLResponse)
 def routes_page(request: Request):
     user, denied = require_admin_or_redirect(request)
@@ -2161,6 +2249,185 @@ def routes_page(request: Request):
             "user": user,
             **payload,
             "message": None,
+            "error": None,
+        },
+    )
+
+
+@app.get("/trunks", response_class=HTMLResponse)
+def trunks_page(request: Request):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    with closing(db_conn()) as conn:
+        payload = trunks_page_payload(conn)
+    return templates.TemplateResponse(
+        "trunks.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": None,
+            "error": None,
+        },
+    )
+
+
+@app.post("/trunks/inbound", response_class=HTMLResponse)
+def trunks_inbound_create(
+    request: Request,
+    name: str = Form(...),
+    proxy: str = Form(...),
+    in_prefix: str = Form(""),
+    inbound_did_pattern: str = Form(""),
+    inbound_match_mode: str = Form("exact"),
+    enabled: str = Form("true"),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    trunk_name = name.strip()
+    proxy_value = proxy.strip()
+    if not trunk_name or not proxy_value:
+        with closing(db_conn()) as conn:
+            payload = trunks_page_payload(conn)
+        return templates.TemplateResponse(
+            "trunks.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Trunk ID and Proxy / SIP Host/IP are required.",
+            },
+        )
+    with closing(db_conn()) as conn:
+        saved_name = upsert_trunk_record(
+            conn,
+            name=trunk_name,
+            proxy=proxy_value,
+            direction="inbound",
+            in_prefix=in_prefix,
+            inbound_did_pattern=inbound_did_pattern,
+            inbound_match_mode=inbound_match_mode,
+            out_prefix="",
+            dialout_pattern="",
+            outbound_match_mode="prefix",
+            enabled=as_bool(enabled),
+        )
+        payload = trunks_page_payload(conn)
+    sync_trunks_to_freeswitch()
+    sync_inbound_routes_dialplan()
+    sync_outbound_routes_dialplan()
+    return templates.TemplateResponse(
+        "trunks.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": f"Inbound trunk {saved_name} saved.",
+            "error": None,
+        },
+    )
+
+
+@app.post("/trunks/outbound", response_class=HTMLResponse)
+def trunks_outbound_create(
+    request: Request,
+    name: str = Form(...),
+    proxy: str = Form(...),
+    out_prefix: str = Form(""),
+    dialout_pattern: str = Form(""),
+    outbound_match_mode: str = Form("prefix"),
+    enabled: str = Form("true"),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    trunk_name = name.strip()
+    proxy_value = proxy.strip()
+    if not trunk_name or not proxy_value:
+        with closing(db_conn()) as conn:
+            payload = trunks_page_payload(conn)
+        return templates.TemplateResponse(
+            "trunks.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Trunk ID and Proxy / SIP Host/IP are required.",
+            },
+        )
+    with closing(db_conn()) as conn:
+        saved_name = upsert_trunk_record(
+            conn,
+            name=trunk_name,
+            proxy=proxy_value,
+            direction="outbound",
+            in_prefix="",
+            inbound_did_pattern="",
+            inbound_match_mode="exact",
+            out_prefix=out_prefix,
+            dialout_pattern=dialout_pattern,
+            outbound_match_mode=outbound_match_mode,
+            enabled=as_bool(enabled),
+        )
+        payload = trunks_page_payload(conn)
+    sync_trunks_to_freeswitch()
+    sync_inbound_routes_dialplan()
+    sync_outbound_routes_dialplan()
+    return templates.TemplateResponse(
+        "trunks.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": f"Outbound trunk {saved_name} saved.",
+            "error": None,
+        },
+    )
+
+
+@app.post("/trunks/delete", response_class=HTMLResponse)
+def trunks_delete(
+    request: Request,
+    name: str = Form(...),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    trunk_name = name.strip()
+    if not trunk_name:
+        with closing(db_conn()) as conn:
+            payload = trunks_page_payload(conn)
+        return templates.TemplateResponse(
+            "trunks.html",
+            {"request": request, "user": user, **payload, "message": None, "error": "Trunk name is required for delete."},
+        )
+    with closing(db_conn()) as conn:
+        existing = conn.execute("SELECT name FROM trunks WHERE name = ?", (trunk_name,)).fetchone()
+        if existing is None:
+            payload = trunks_page_payload(conn)
+            return templates.TemplateResponse(
+                "trunks.html",
+                {"request": request, "user": user, **payload, "message": None, "error": f"Trunk {trunk_name} was not found."},
+            )
+        conn.execute("DELETE FROM inbound_routes WHERE inbound_trunk_name = ?", (trunk_name,))
+        conn.execute("DELETE FROM outbound_routes WHERE trunk_name = ?", (trunk_name,))
+        conn.execute("DELETE FROM trunks WHERE name = ?", (trunk_name,))
+        conn.commit()
+        payload = trunks_page_payload(conn)
+    sync_trunks_to_freeswitch()
+    sync_inbound_routes_dialplan()
+    sync_outbound_routes_dialplan()
+    return templates.TemplateResponse(
+        "trunks.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": f"Trunk {trunk_name} removed.",
             "error": None,
         },
     )
