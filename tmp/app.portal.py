@@ -1137,6 +1137,14 @@ def save_uploaded_fax_file(file_upload: UploadFile) -> str:
     return str(dest)
 
 
+def apply_outbound_trunk_prefix(number: str, prefix: str) -> str:
+    destination = (number or "").strip()
+    trunk_prefix = (prefix or "").strip()
+    if not trunk_prefix:
+        return destination
+    return destination if destination.startswith(trunk_prefix) else f"{trunk_prefix}{destination}"
+
+
 def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password: str, context: str) -> None:
     xml = textwrap.dedent(
         f"""\
@@ -3305,7 +3313,7 @@ def fax_outbound_create(
     with closing(db_conn()) as conn:
         trunk_name = gateway.strip()
         trunk = conn.execute(
-            "SELECT name, direction FROM trunks WHERE name = ? AND enabled = 1",
+            "SELECT name, direction, outbound_prefix FROM trunks WHERE name = ? AND enabled = 1",
             (trunk_name,),
         ).fetchone()
         if trunk is None:
@@ -3345,6 +3353,7 @@ def fax_outbound_create(
                     "send_result": None,
                 },
             )
+        fax_target_number = apply_outbound_trunk_prefix(destination_number.strip(), str(trunk["outbound_prefix"] or ""))
         conn.execute(
             """
             INSERT INTO fax_routes(direction, destination_number, gateway, file_path, enabled, created_at)
@@ -3398,7 +3407,7 @@ def fax_outbound_create(
         "bgapi originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
         + row["gateway"]
         + "/"
-        + row["destination_number"]
+        + fax_target_number
         + " &txfax("
         + fax_file
         + ")"
@@ -3432,6 +3441,12 @@ def fax_outbound_send(
             "SELECT * FROM fax_routes WHERE id = ? AND direction = 'outbound'",
             (fax_id,),
         ).fetchone()
+        trunk = None
+        if row is not None:
+            trunk = conn.execute(
+                "SELECT name, direction, enabled, outbound_prefix FROM trunks WHERE name = ?",
+                (str(row["gateway"] or "").strip(),),
+            ).fetchone()
         inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
         outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
         trunks = conn.execute(
@@ -3451,6 +3466,34 @@ def fax_outbound_send(
                 "send_result": None,
             },
         )
+    if trunk is None:
+        return templates.TemplateResponse(
+            "fax.html",
+            {
+                "request": request,
+                "user": user,
+                "inbound": inbound,
+                "outbound": outbound,
+                "outbound_trunks": trunks,
+                "message": f"Outbound trunk {row['gateway']} not found.",
+                "send_result": None,
+            },
+        )
+    trunk_direction = normalize_trunk_direction(str(trunk["direction"] or "outbound"))
+    if not bool(trunk["enabled"]) or trunk_direction not in {"outbound", "both"}:
+        return templates.TemplateResponse(
+            "fax.html",
+            {
+                "request": request,
+                "user": user,
+                "inbound": inbound,
+                "outbound": outbound,
+                "outbound_trunks": trunks,
+                "message": f"Outbound trunk {row['gateway']} is not enabled for outbound.",
+                "send_result": None,
+            },
+        )
+    fax_target_number = apply_outbound_trunk_prefix(str(row["destination_number"] or ""), str(trunk["outbound_prefix"] or ""))
 
     try:
         fax_file = prepare_outbound_fax_file(str(row["file_path"] or ""), int(row["id"]))
@@ -3472,7 +3515,7 @@ def fax_outbound_send(
         "bgapi originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
         + row["gateway"]
         + "/"
-        + row["destination_number"]
+        + fax_target_number
         + " &txfax("
         + fax_file
         + ")"
