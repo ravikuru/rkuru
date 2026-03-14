@@ -18,7 +18,7 @@
       </label>
       <div id="trunk-inbound-fields">
         <label>In prefix<input name="in_prefix" placeholder="Enter inbound prefix digits" /></label>
-        <label>Inbound DID / Pattern<input id="inbound-did-pattern" name="did_pattern" placeholder="4163501959 or ^647\\d{7}$" /></label>
+        <label>Inbound DID / Pattern<input id="inbound-did-pattern" name="did_pattern" value="^(1?\d{10})$" placeholder="4163501959 or ^647\\d{7}$" /></label>
         <label>Match Mode
           <select name="inbound_match_mode">
             <option value="exact">exact</option>
@@ -29,7 +29,7 @@
       </div>
       <div id="trunk-outbound-fields">
         <label>Out prefix<input name="out_prefix" placeholder="Enter outbound prefix digits" /></label>
-        <label>Dialout Number / Pattern<input id="outbound-dial-pattern" name="dial_pattern" placeholder="9 or ^00\\d+$" /></label>
+        <label>Dialout Number / Pattern<input id="outbound-dial-pattern" name="dial_pattern" value="^(1?\d{10})$" placeholder="9 or ^00\\d+$" /></label>
         <label>Match Mode
           <select name="outbound_match_mode">
             <option value="prefix">prefix</option>
