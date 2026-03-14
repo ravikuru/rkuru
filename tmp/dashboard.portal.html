@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Dashboard</h2>
+{% if security_message %}<p class="ok">{{ security_message }}</p>{% endif %}
+<div class="grid">
+  {% for q in queue_numbers %}
+  <div class="card">
+    <h3>Queue {{ q }}</h3>
+    <p>Depth: <b>{{ wallboards[q].queue_depth }}</b></p>
+    <p>Longest Wait: <b>{{ wallboards[q].longest_wait_seconds }}s</b></p>
+    <p>SLA(20s): <b>{{ wallboards[q].service_level_20s }}%</b></p>
+    <p>Abandon: <b>{{ wallboards[q].abandon_rate }}%</b></p>
+    <p>People Ahead Announce: <b>{{ queue_settings.get(q, {}).get("announce_position", False) }}</b></p>
+    <p>Press <b>{{ queue_settings.get(q, {}).get("voicemail_escape_digit", "9") }}</b> anytime for voicemail</p>
+    <form method="post" action="/simulate-call">
+      <input type="hidden" name="queue_number" value="{{ q }}" />
+      <button type="submit">Simulate Call</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <h3>Live Overview</h3>
+  <pre>{{ live }}</pre>
+</div>
+
+<div class="card">
+  <h3>Status Security - Blocked IPs</h3>
+  <p class="hint">Admin (rkuru) can unblock or move an IP to whitelist directly from Status.</p>
+  <table>
+    <tr><th>IP</th><th>Reason</th><th>Source</th><th>Count</th><th>Last Blocked</th><th>Actions</th></tr>
+    {% for row in blocked_ips %}
+    <tr>
+      <td>{{ row.ip_address }}</td>
+      <td>{{ row.reason or "-" }}</td>
+      <td>{{ row.source_event_type or "-" }}</td>
+      <td>{{ row.block_count }}</td>
+      <td>{{ row.last_blocked_at }}</td>
+      <td>
+        <form method="post" action="/security/unblock" style="display:inline;">
+          <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
+          <input type="hidden" name="return_to" value="dashboard" />
+          <button type="submit">Unblock</button>
+        </form>
+        <form method="post" action="/security/whitelist/add" style="display:inline; margin-left:6px;">
+          <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
+          <input type="hidden" name="return_to" value="dashboard" />
+          <input type="hidden" name="note" value="Whitelisted from Status page by admin" />
+          <button type="submit">Whitelist</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">No blocked IPs.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Status Security - Whitelist</h3>
+  <form method="post" action="/security/whitelist/add" class="grid-form" style="margin-bottom:10px;">
+    <label>IP Address<input name="ip_address" placeholder="203.0.113.10" required /></label>
+    <label>Note<input name="note" placeholder="Carrier/customer trusted source" /></label>
+    <input type="hidden" name="return_to" value="dashboard" />
+    <button type="submit">Add Whitelist</button>
+  </form>
+  <table>
+    <tr><th>IP</th><th>Note</th><th>By</th><th>Updated</th><th>Action</th></tr>
+    {% for row in whitelist_ips %}
+    <tr>
+      <td>{{ row.ip_address }}</td>
+      <td>{{ row.note or "-" }}</td>
+      <td>{{ row.created_by or "-" }}</td>
+      <td>{{ row.updated_at }}</td>
+      <td>
+        <form method="post" action="/security/whitelist/remove">
+          <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
+          <input type="hidden" name="return_to" value="dashboard" />
+          <button type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No whitelisted IPs.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Agents</h3>
+  <table>
+    <tr><th>Agent</th><th>Ext</th><th>Status</th><th>Queues</th><th>Answered Today</th></tr>
+    {% for a in agents %}
+    <tr>
+      <td>{{ a.agent_id }}</td>
+      <td>{{ a.extension }}</td>
+      <td>{{ a.status }}</td>
+      <td>{{ a.queues }}</td>
+      <td>{{ a.calls_answered_today }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Queue Monitor (People Ahead)</h3>
+  {% for q in queue_numbers %}
+    <h4>Queue {{ q }}</h4>
+    <table>
+      <tr><th>Caller</th><th>People Ahead</th><th>Wait (s)</th><th>Call ID</th></tr>
+      {% for row in queue_monitors.get(q, []) %}
+      <tr>
+        <td>{{ row.caller_id }}</td>
+        <td>{{ row.people_ahead }}</td>
+        <td>{{ row.wait_seconds }}</td>
+        <td>{{ row.call_id }}</td>
+      </tr>
+      {% endfor %}
+      {% if not queue_monitors.get(q) %}
+      <tr><td colspan="4">No callers waiting</td></tr>
+      {% endif %}
+    </table>
+  {% endfor %}
+</div>
+{% endblock %}

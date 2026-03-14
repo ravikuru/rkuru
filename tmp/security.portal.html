@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Security Log</h1>
+{% if message %}
+<p class="ok">{{ message }}</p>
+{% endif %}
+<p>Showing latest {{ limit }} security events (suspicious requests, failed logins, denied access, and probes).</p>
+
+<h2>Blocked IPs (auto-block)</h2>
+<form method="get" action="/security" style="margin-bottom:12px;">
+  <input type="hidden" name="limit" value="{{ limit }}" />
+  <label for="blocked_ip"><strong>Search IP:</strong></label>
+  <input id="blocked_ip" name="blocked_ip" value="{{ blocked_ip_query or '' }}" placeholder="e.g. 194.50.16.198" />
+  <button type="submit">Search</button>
+  {% if blocked_ip_query %}
+  <a href="/security?limit={{ limit }}">Clear</a>
+  {% endif %}
+</form>
+
+{% if blocked_lookup %}
+  {% if blocked_lookup.status == "blocked" %}
+  <p class="error"><strong>{{ blocked_lookup.text }}</strong></p>
+  {% elif blocked_lookup.status == "unblocked" %}
+  <p class="ok"><strong>{{ blocked_lookup.text }}</strong></p>
+  {% else %}
+  <p><strong>{{ blocked_lookup.text }}</strong></p>
+  {% endif %}
+{% endif %}
+
+<table>
+  <thead>
+    <tr>
+      <th>IP Address</th>
+      <th>Reason</th>
+      <th>Source</th>
+      <th>Block Count</th>
+      <th>First Blocked</th>
+      <th>Last Blocked</th>
+      <th>Last Seen</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in blocked_ips %}
+    <tr>
+      <td>{{ row.ip_address }}</td>
+      <td>{{ row.reason }}</td>
+      <td>{{ row.source_event_type or "-" }}</td>
+      <td>{{ row.block_count }}</td>
+      <td>{{ row.first_blocked_at }}</td>
+      <td>{{ row.last_blocked_at }}</td>
+      <td>{{ row.last_seen_at }}</td>
+      <td>
+        <form method="post" action="/security/unblock">
+          <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
+          <input type="hidden" name="return_to" value="security" />
+          <button type="submit">Unblock</button>
+        </form>
+        <form method="post" action="/security/whitelist/add" style="margin-top:6px;">
+          <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
+          <input type="hidden" name="return_to" value="security" />
+          <input type="hidden" name="note" value="Whitelisted from blocked list by admin" />
+          <button type="submit">Whitelist</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td colspan="8">No blocked IPs.</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Whitelisted IPs</h2>
+<form method="get" action="/security" style="margin-bottom:12px;">
+  <input type="hidden" name="limit" value="{{ limit }}" />
+  <label for="whitelist_ip"><strong>Search whitelist IP:</strong></label>
+  <input id="whitelist_ip" name="whitelist_ip" value="{{ whitelist_ip_query or '' }}" placeholder="e.g. 64.34.222.216" />
+  <button type="submit">Search</button>
+  {% if whitelist_ip_query %}
+  <a href="/security?limit={{ limit }}">Clear</a>
+  {% endif %}
+</form>
+
+<form method="post" action="/security/whitelist/add" class="grid-form" style="margin-bottom:14px;">
+  <label>IP Address
+    <input name="ip_address" placeholder="203.0.113.10" required />
+  </label>
+  <label>Note (optional)
+    <input name="note" placeholder="Carrier static IP / customer whitelist" />
+  </label>
+  <input type="hidden" name="return_to" value="security" />
+  <button type="submit">Add to Whitelist</button>
+</form>
+
+<table>
+  <thead>
+    <tr>
+      <th>IP Address</th>
+      <th>Note</th>
+      <th>Updated By</th>
+      <th>Created</th>
+      <th>Updated</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in whitelist_ips %}
+    <tr>
+      <td>{{ row.ip_address }}</td>
+      <td>{{ row.note or "-" }}</td>
+      <td>{{ row.created_by or "-" }}</td>
+      <td>{{ row.created_at }}</td>
+      <td>{{ row.updated_at }}</td>
+      <td>
+        <form method="post" action="/security/whitelist/remove">
+          <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
+          <input type="hidden" name="return_to" value="security" />
+          <button type="submit">Remove Whitelist</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td colspan="6">No whitelisted IPs.</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Recent Security Events</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Time (UTC)</th>
+      <th>Severity</th>
+      <th>Event</th>
+      <th>IP Address</th>
+      <th>User</th>
+      <th>Method</th>
+      <th>Path</th>
+      <th>Details</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td>{{ row.created_at }}</td>
+      <td>{{ row.severity }}</td>
+      <td>{{ row.event_type }}</td>
+      <td>{{ row.ip_address }}</td>
+      <td>{{ row.username or "-" }}</td>
+      <td>{{ row.method }}</td>
+      <td>{{ row.path }}</td>
+      <td>{{ row.details or "-" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

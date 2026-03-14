@@ -15,6 +15,7 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
@@ -296,6 +297,32 @@ def iptables_unblock_ip(ip_text: str) -> bool:
     return removed
 
 
+def active_whitelist_ips() -> set[str]:
+    try:
+        with closing(db_conn()) as conn:
+            rows = conn.execute("SELECT ip_address FROM whitelist_ips WHERE active = 1").fetchall()
+    except Exception:
+        return set()
+    out: set[str] = set()
+    for row in rows:
+        ip_text = normalize_ipv4(row["ip_address"] or "")
+        if ip_text:
+            out.add(ip_text)
+    return out
+
+
+def is_ip_whitelisted(ip_text: str) -> bool:
+    return normalize_ipv4(ip_text) in active_whitelist_ips()
+
+
+def security_redirect_url(return_to: str, message: str) -> str:
+    target = (return_to or "security").strip().lower()
+    encoded = quote_plus(message or "")
+    if target == "dashboard":
+        return f"/dashboard?security_message={encoded}" if encoded else "/dashboard"
+    return f"/security?message={encoded}" if encoded else "/security"
+
+
 def mark_ip_blocked(ip_text: str, reason: str, source_event: str, last_seen_at: str) -> None:
     now = datetime.now(UTC).isoformat()
     with closing(db_conn()) as conn:
@@ -332,6 +359,14 @@ def maybe_autoblock_ip(
 ) -> bool:
     normalized = normalize_ipv4(ip_text)
     if not is_public_ipv4(normalized):
+        return False
+    if is_ip_whitelisted(normalized):
+        log_system_security_event(
+            "ip_block_skipped_whitelist",
+            severity="info",
+            ip_address=normalized,
+            details=f"Skipped block for whitelisted IP (source={source_event})",
+        )
         return False
     if not iptables_block_ip(normalized):
         return False
@@ -447,6 +482,7 @@ def log_and_block_sip_invite_probes() -> None:
     if offset < 0 or offset > size:
         offset = max(0, size - SIP_INVITE_SCAN_TAIL_BYTES)
     trusted_ips = trusted_trunk_ips()
+    whitelisted_ips = active_whitelist_ips()
     try:
         with FREESWITCH_LOG_FILE.open("rb") as fh:
             fh.seek(offset)
@@ -466,6 +502,8 @@ def log_and_block_sip_invite_probes() -> None:
         target = (match.group(1) or "").strip()
         ip_text = normalize_ipv4(match.group(2) or "")
         if not is_public_ipv4(ip_text):
+            continue
+        if ip_text in whitelisted_ips:
             continue
         if ip_text in trusted_ips:
             continue
@@ -493,15 +531,35 @@ def log_and_block_sip_invite_probes() -> None:
 
 def security_autoblock_tick() -> None:
     log_and_block_sip_invite_probes()
+    whitelisted_ips = active_whitelist_ips()
     # Re-apply active DB blocks in case firewall restarted.
     with closing(db_conn()) as conn:
         active_rows = conn.execute(
             "SELECT ip_address FROM blocked_ips WHERE active = 1 ORDER BY id DESC LIMIT 2000"
         ).fetchall()
+    auto_unblocked_for_whitelist: list[str] = []
     for row in active_rows:
         ip_text = normalize_ipv4(row["ip_address"] or "")
-        if is_public_ipv4(ip_text):
-            iptables_block_ip(ip_text)
+        if not is_public_ipv4(ip_text):
+            continue
+        if ip_text in whitelisted_ips:
+            iptables_unblock_ip(ip_text)
+            auto_unblocked_for_whitelist.append(ip_text)
+            continue
+        iptables_block_ip(ip_text)
+    if auto_unblocked_for_whitelist:
+        now = datetime.now(UTC).isoformat()
+        with closing(db_conn()) as conn:
+            for ip_text in auto_unblocked_for_whitelist:
+                conn.execute(
+                    """
+                    UPDATE blocked_ips
+                    SET active = 0, unblocked_at = ?, reason = ?
+                    WHERE ip_address = ? AND active = 1
+                    """,
+                    (now, "Auto-unblocked because IP is whitelisted", ip_text),
+                )
+            conn.commit()
 
     lookback = (datetime.now(UTC) - timedelta(minutes=AUTO_BLOCK_LOOKBACK_MINUTES)).isoformat()
     placeholders = ",".join("?" for _ in AUTO_BLOCK_EVENT_TYPES)
@@ -519,15 +577,12 @@ def security_autoblock_tick() -> None:
         ip_text = normalize_ipv4(row["ip_address"] or "")
         if not is_public_ipv4(ip_text):
             continue
-        if not iptables_block_ip(ip_text):
-            continue
         reason = f"Auto-block scanner/probe: {row['hit_count']} events in {AUTO_BLOCK_LOOKBACK_MINUTES}m"
-        mark_ip_blocked(ip_text, reason, "scanner_probe", row["last_seen"] or datetime.now(UTC).isoformat())
-        log_system_security_event(
-            "ip_auto_blocked",
-            severity="high",
-            ip_address=ip_text,
-            details=reason,
+        maybe_autoblock_ip(
+            ip_text,
+            source_event="scanner_probe",
+            reason=reason,
+            last_seen_at=row["last_seen"] or datetime.now(UTC).isoformat(),
         )
 
 
@@ -731,6 +786,15 @@ def init_db() -> None:
                 active INTEGER NOT NULL DEFAULT 1,
                 unblocked_at TEXT NOT NULL DEFAULT ''
             );
+
+            CREATE TABLE IF NOT EXISTS whitelist_ips (
+                ip_address TEXT PRIMARY KEY,
+                note TEXT NOT NULL DEFAULT '',
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1
+            );
             """
         )
 
@@ -814,10 +878,16 @@ def init_db() -> None:
             conn.execute("ALTER TABLE conferences ADD COLUMN auto_outcall_trunk TEXT NOT NULL DEFAULT ''")
         if "video_layout" not in conference_cols:
             conn.execute("ALTER TABLE conferences ADD COLUMN video_layout TEXT NOT NULL DEFAULT 'speaker'")
+        whitelist_cols = {row["name"] for row in conn.execute("PRAGMA table_info(whitelist_ips)").fetchall()}
+        if whitelist_cols and "created_by" not in whitelist_cols:
+            conn.execute("ALTER TABLE whitelist_ips ADD COLUMN created_by TEXT NOT NULL DEFAULT ''")
+        if whitelist_cols and "active" not in whitelist_cols:
+            conn.execute("ALTER TABLE whitelist_ips ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_created_at ON security_events(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip_address)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_blocked_ips_active ON blocked_ips(active)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_whitelist_ips_active ON whitelist_ips(active)")
 
         existing = conn.execute("SELECT username FROM users WHERE username = ?", (DEFAULT_ADMIN_USER,)).fetchone()
         if existing is None:
@@ -2009,9 +2079,28 @@ def dashboard(request: Request):
             )
         queue_monitors[queue_number] = rows
 
+    security_message = (request.query_params.get("security_message") or "").strip()
     with closing(db_conn()) as conn:
         queue_settings_rows = conn.execute(
             "SELECT number, announce_position, voicemail_escape_digit FROM queues"
+        ).fetchall()
+        blocked_ips = conn.execute(
+            """
+            SELECT ip_address, reason, source_event_type, block_count, last_blocked_at
+            FROM blocked_ips
+            WHERE active = 1
+            ORDER BY last_blocked_at DESC
+            LIMIT 25
+            """
+        ).fetchall()
+        whitelist_ips = conn.execute(
+            """
+            SELECT ip_address, note, created_by, updated_at
+            FROM whitelist_ips
+            WHERE active = 1
+            ORDER BY updated_at DESC
+            LIMIT 25
+            """
         ).fetchall()
     queue_settings = {
         row["number"]: {
@@ -2031,6 +2120,9 @@ def dashboard(request: Request):
             "queue_settings": queue_settings,
             "agents": platform.dashboard.agent_details(),
             "live": platform.analytics.live_report(),
+            "blocked_ips": blocked_ips,
+            "whitelist_ips": whitelist_ips,
+            "security_message": security_message,
         },
     )
 
@@ -4746,6 +4838,7 @@ def security_logs_page(request: Request):
     blocked_ip_query = (request.query_params.get("blocked_ip") or "").strip()
     blocked_ip_exact = normalize_ipv4(blocked_ip_query) if blocked_ip_query else ""
     blocked_lookup: dict[str, str] | None = None
+    whitelist_ip_query = (request.query_params.get("whitelist_ip") or "").strip()
 
     with closing(db_conn()) as conn:
         rows = conn.execute(
@@ -4802,6 +4895,25 @@ def security_logs_page(request: Request):
                     "status": "unblocked",
                     "text": f"{row['ip_address']} was blocked before but is currently unblocked.",
                 }
+        if whitelist_ip_query:
+            whitelist_ips = conn.execute(
+                """
+                SELECT ip_address, note, created_by, created_at, updated_at
+                FROM whitelist_ips
+                WHERE active = 1 AND ip_address LIKE ?
+                ORDER BY updated_at DESC
+                """,
+                (f"%{whitelist_ip_query}%",),
+            ).fetchall()
+        else:
+            whitelist_ips = conn.execute(
+                """
+                SELECT ip_address, note, created_by, created_at, updated_at
+                FROM whitelist_ips
+                WHERE active = 1
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
 
     return templates.TemplateResponse(
         "security.html",
@@ -4814,19 +4926,25 @@ def security_logs_page(request: Request):
             "message": message,
             "blocked_ip_query": blocked_ip_query,
             "blocked_lookup": blocked_lookup,
+            "whitelist_ips": whitelist_ips,
+            "whitelist_ip_query": whitelist_ip_query,
         },
     )
 
 
 @app.post("/security/unblock", response_class=HTMLResponse)
-def security_unblock_ip(request: Request, ip_address: str = Form(...)):
+def security_unblock_ip(
+    request: Request,
+    ip_address: str = Form(...),
+    return_to: str = Form("security"),
+):
     user, denied = require_admin_or_redirect(request)
     if denied:
         return denied
 
     ip_text = normalize_ipv4(ip_address)
     if not ip_text:
-        return RedirectResponse(url="/security?message=Invalid+IP+address", status_code=303)
+        return RedirectResponse(url=security_redirect_url(return_to, "Invalid IP address"), status_code=303)
 
     removed = iptables_unblock_ip(ip_text)
     with closing(db_conn()) as conn:
@@ -4842,7 +4960,88 @@ def security_unblock_ip(request: Request, ip_address: str = Form(...)):
         ip_address=ip_text,
         details=f"Unblocked by {user}; iptables_removed={removed}",
     )
-    return RedirectResponse(url=f"/security?message=Unblocked+{ip_text}", status_code=303)
+    return RedirectResponse(url=security_redirect_url(return_to, f"Unblocked {ip_text}"), status_code=303)
+
+
+@app.post("/security/whitelist/add", response_class=HTMLResponse)
+def security_whitelist_add(
+    request: Request,
+    ip_address: str = Form(...),
+    note: str = Form(""),
+    return_to: str = Form("security"),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    ip_text = normalize_ipv4(ip_address)
+    if not ip_text:
+        return RedirectResponse(url=security_redirect_url(return_to, "Invalid IP address"), status_code=303)
+
+    now = datetime.now(UTC).isoformat()
+    note_text = (note or "").strip()[:255]
+    removed = iptables_unblock_ip(ip_text)
+    with closing(db_conn()) as conn:
+        exists = conn.execute(
+            "SELECT ip_address FROM whitelist_ips WHERE ip_address = ? LIMIT 1",
+            (ip_text,),
+        ).fetchone()
+        if exists is None:
+            conn.execute(
+                """
+                INSERT INTO whitelist_ips(ip_address, note, created_by, created_at, updated_at, active)
+                VALUES(?,?,?,?,?,1)
+                """,
+                (ip_text, note_text, user or "", now, now),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE whitelist_ips
+                SET note = ?, created_by = ?, updated_at = ?, active = 1
+                WHERE ip_address = ?
+                """,
+                (note_text, user or "", now, ip_text),
+            )
+        conn.execute(
+            "UPDATE blocked_ips SET active = 0, unblocked_at = ? WHERE ip_address = ?",
+            (now, ip_text),
+        )
+        conn.commit()
+    log_system_security_event(
+        "ip_whitelisted_by_admin",
+        severity="info",
+        ip_address=ip_text,
+        details=f"Whitelisted by {user}; iptables_removed={removed}; note={note_text or '-'}",
+    )
+    return RedirectResponse(url=security_redirect_url(return_to, f"Whitelisted {ip_text}"), status_code=303)
+
+
+@app.post("/security/whitelist/remove", response_class=HTMLResponse)
+def security_whitelist_remove(
+    request: Request,
+    ip_address: str = Form(...),
+    return_to: str = Form("security"),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    ip_text = normalize_ipv4(ip_address)
+    if not ip_text:
+        return RedirectResponse(url=security_redirect_url(return_to, "Invalid IP address"), status_code=303)
+    now = datetime.now(UTC).isoformat()
+    with closing(db_conn()) as conn:
+        conn.execute(
+            "UPDATE whitelist_ips SET active = 0, updated_at = ? WHERE ip_address = ?",
+            (now, ip_text),
+        )
+        conn.commit()
+    log_system_security_event(
+        "ip_whitelist_removed_by_admin",
+        severity="info",
+        ip_address=ip_text,
+        details=f"Whitelist removed by {user}",
+    )
+    return RedirectResponse(url=security_redirect_url(return_to, f"Removed whitelist {ip_text}"), status_code=303)
 
 
 @app.get("/settings", response_class=HTMLResponse)
