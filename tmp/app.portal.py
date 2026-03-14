@@ -5,6 +5,7 @@ import ipaddress
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import textwrap
@@ -948,6 +949,15 @@ def write_root_file(path: str, content: str) -> None:
     )
 
 
+def root_file_exists(path: str | Path) -> bool:
+    probe = subprocess.run(
+        ["sudo", "test", "-f", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    return probe.returncode == 0
+
+
 def ensure_fax_runtime() -> None:
     subprocess.run(
         ["sudo", "mkdir", "-p", str(FAX_INBOUND_DIR), str(FAX_OUTBOUND_DIR)],
@@ -1010,21 +1020,52 @@ def prepare_outbound_fax_file(file_path: str, fax_id: int) -> str:
     source = Path((file_path or "").strip())
     if not source.is_absolute():
         source = (BASE_DIR / source).resolve()
-    if not source.exists():
+    if not source.exists() and not root_file_exists(source):
         raise ValueError(f"Fax source file does not exist: {source}")
     if " " in str(source):
         raise ValueError("Fax file path cannot contain spaces.")
-    suffix = source.suffix.lower()
-    if suffix in {".tif", ".tiff"}:
-        return str(source)
-    if suffix != ".pdf":
-        raise ValueError("Outbound fax source must be TIFF or PDF.")
-
     ensure_fax_runtime()
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     out_tiff = FAX_OUTBOUND_DIR / f"fax_out_{fax_id}_{stamp}.tif"
-    subprocess.run(
-        [
+    suffix = source.suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        return str(source)
+
+    errors: list[str] = []
+    gs_cmd = [
+        "sudo",
+        "gs",
+        "-q",
+        "-dNOPAUSE",
+        "-dBATCH",
+        "-sDEVICE=tiffg4",
+        "-r204x196",
+        f"-sOutputFile={out_tiff}",
+        str(source),
+    ]
+    gs_try = subprocess.run(gs_cmd, capture_output=True, text=True)
+    if gs_try.returncode == 0 and root_file_exists(out_tiff):
+        return str(out_tiff)
+    errors.append((gs_try.stderr or gs_try.stdout or "gs direct conversion failed").strip())
+
+    # Office docs and many other types can be converted via LibreOffice to PDF first.
+    temp_dir = Path(f"/tmp/callture_fax_convert_{fax_id}_{stamp}")
+    subprocess.run(["sudo", "mkdir", "-p", str(temp_dir)], capture_output=True, text=True, check=True)
+    soffice_cmd = [
+        "sudo",
+        "soffice",
+        "--headless",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        str(temp_dir),
+        str(source),
+    ]
+    soffice_try = subprocess.run(soffice_cmd, capture_output=True, text=True)
+    pdf_candidates = list(temp_dir.glob("*.pdf"))
+    if soffice_try.returncode == 0 and pdf_candidates:
+        pdf_path = pdf_candidates[0]
+        gs_pdf_cmd = [
             "sudo",
             "gs",
             "-q",
@@ -1033,13 +1074,25 @@ def prepare_outbound_fax_file(file_path: str, fax_id: int) -> str:
             "-sDEVICE=tiffg4",
             "-r204x196",
             f"-sOutputFile={out_tiff}",
-            str(source),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return str(out_tiff)
+            str(pdf_path),
+        ]
+        gs_pdf_try = subprocess.run(gs_pdf_cmd, capture_output=True, text=True)
+        if gs_pdf_try.returncode == 0 and root_file_exists(out_tiff):
+            return str(out_tiff)
+        errors.append((gs_pdf_try.stderr or gs_pdf_try.stdout or "gs PDF conversion failed").strip())
+    else:
+        errors.append((soffice_try.stderr or soffice_try.stdout or "soffice conversion failed").strip())
+
+    # Optional fallback with ImageMagick when available.
+    if shutil.which("convert"):
+        magick_cmd = ["sudo", "convert", str(source), str(out_tiff)]
+        magick_try = subprocess.run(magick_cmd, capture_output=True, text=True)
+        if magick_try.returncode == 0 and root_file_exists(out_tiff):
+            return str(out_tiff)
+        errors.append((magick_try.stderr or magick_try.stdout or "convert failed").strip())
+
+    err_text = " | ".join([e for e in errors if e])[:500]
+    raise ValueError(f"Unable to convert source file to TIFF. {err_text}")
 
 
 def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password: str, context: str) -> None:
@@ -2825,15 +2878,28 @@ def fax_page(request: Request):
     if denied:
         return denied
     with closing(db_conn()) as conn:
-        inbound = conn.execute(
-            "SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC"
-        ).fetchall()
-        outbound = conn.execute(
-            "SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC"
+        inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
+        outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
+        trunks = conn.execute(
+            """
+            SELECT name, proxy, direction
+            FROM trunks
+            WHERE enabled = 1
+              AND direction IN ('outbound', 'both')
+            ORDER BY name
+            """
         ).fetchall()
     return templates.TemplateResponse(
         "fax.html",
-        {"request": request, "user": user, "inbound": inbound, "outbound": outbound, "message": None, "send_result": None},
+        {
+            "request": request,
+            "user": user,
+            "inbound": inbound,
+            "outbound": outbound,
+            "outbound_trunks": trunks,
+            "message": None,
+            "send_result": None,
+        },
     )
 
 
@@ -2870,42 +2936,79 @@ def fax_outbound_create(
     if denied:
         return denied
     with closing(db_conn()) as conn:
+        trunk_name = gateway.strip()
+        trunk = conn.execute(
+            "SELECT name, direction FROM trunks WHERE name = ? AND enabled = 1",
+            (trunk_name,),
+        ).fetchone()
+        if trunk is None:
+            inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
+            outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
+            trunks = conn.execute(
+                "SELECT name, proxy, direction FROM trunks WHERE enabled = 1 AND direction IN ('outbound', 'both') ORDER BY name"
+            ).fetchall()
+            return templates.TemplateResponse(
+                "fax.html",
+                {
+                    "request": request,
+                    "user": user,
+                    "inbound": inbound,
+                    "outbound": outbound,
+                    "outbound_trunks": trunks,
+                    "message": f"Selected trunk {trunk_name} does not exist or is disabled.",
+                    "send_result": None,
+                },
+            )
+        trunk_direction = normalize_trunk_direction(str(trunk["direction"] or "outbound"))
+        if trunk_direction not in {"outbound", "both"}:
+            inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
+            outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
+            trunks = conn.execute(
+                "SELECT name, proxy, direction FROM trunks WHERE enabled = 1 AND direction IN ('outbound', 'both') ORDER BY name"
+            ).fetchall()
+            return templates.TemplateResponse(
+                "fax.html",
+                {
+                    "request": request,
+                    "user": user,
+                    "inbound": inbound,
+                    "outbound": outbound,
+                    "outbound_trunks": trunks,
+                    "message": f"Selected trunk {trunk_name} is not outbound-enabled.",
+                    "send_result": None,
+                },
+            )
         conn.execute(
             """
             INSERT INTO fax_routes(direction, destination_number, gateway, file_path, enabled, created_at)
             VALUES('outbound', ?, ?, ?, 1, ?)
             """,
-            (destination_number.strip(), gateway.strip(), file_path.strip(), datetime.now(UTC).isoformat()),
+            (destination_number.strip(), trunk_name, file_path.strip(), datetime.now(UTC).isoformat()),
         )
+        fax_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         conn.commit()
-    return RedirectResponse(url="/fax", status_code=303)
-
-
-@app.post("/fax/outbound/send", response_class=HTMLResponse)
-def fax_outbound_send(
-    request: Request,
-    fax_id: int = Form(...),
-):
-    user, denied = require_admin_or_redirect(request)
-    if denied:
-        return denied
-
-    with closing(db_conn()) as conn:
         row = conn.execute(
             "SELECT * FROM fax_routes WHERE id = ? AND direction = 'outbound'",
             (fax_id,),
         ).fetchone()
-        inbound = conn.execute(
-            "SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC"
-        ).fetchall()
-        outbound = conn.execute(
-            "SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC"
+        inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
+        outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
+        trunks = conn.execute(
+            "SELECT name, proxy, direction FROM trunks WHERE enabled = 1 AND direction IN ('outbound', 'both') ORDER BY name"
         ).fetchall()
 
     if row is None:
         return templates.TemplateResponse(
             "fax.html",
-            {"request": request, "user": user, "inbound": inbound, "outbound": outbound, "message": "Fax job not found", "send_result": None},
+            {
+                "request": request,
+                "user": user,
+                "inbound": inbound,
+                "outbound": outbound,
+                "outbound_trunks": trunks,
+                "message": "Fax job not found after save.",
+                "send_result": None,
+            },
         )
 
     try:
@@ -2918,6 +3021,7 @@ def fax_outbound_send(
                 "user": user,
                 "inbound": inbound,
                 "outbound": outbound,
+                "outbound_trunks": trunks,
                 "message": f"Outbound fax file error: {exc}",
                 "send_result": None,
             },
@@ -2940,6 +3044,81 @@ def fax_outbound_send(
             "user": user,
             "inbound": inbound,
             "outbound": outbound,
+            "outbound_trunks": trunks,
+            "message": "Fax send command executed.",
+            "send_result": result,
+        },
+    )
+
+
+@app.post("/fax/outbound/send", response_class=HTMLResponse)
+def fax_outbound_send(
+    request: Request,
+    fax_id: int = Form(...),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+
+    with closing(db_conn()) as conn:
+        row = conn.execute(
+            "SELECT * FROM fax_routes WHERE id = ? AND direction = 'outbound'",
+            (fax_id,),
+        ).fetchone()
+        inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
+        outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
+        trunks = conn.execute(
+            "SELECT name, proxy, direction FROM trunks WHERE enabled = 1 AND direction IN ('outbound', 'both') ORDER BY name"
+        ).fetchall()
+
+    if row is None:
+        return templates.TemplateResponse(
+            "fax.html",
+            {
+                "request": request,
+                "user": user,
+                "inbound": inbound,
+                "outbound": outbound,
+                "outbound_trunks": trunks,
+                "message": "Fax job not found",
+                "send_result": None,
+            },
+        )
+
+    try:
+        fax_file = prepare_outbound_fax_file(str(row["file_path"] or ""), int(row["id"]))
+    except Exception as exc:
+        return templates.TemplateResponse(
+            "fax.html",
+            {
+                "request": request,
+                "user": user,
+                "inbound": inbound,
+                "outbound": outbound,
+                "outbound_trunks": trunks,
+                "message": f"Outbound fax file error: {exc}",
+                "send_result": None,
+            },
+        )
+
+    cmd = (
+        "originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
+        + row["gateway"]
+        + "/"
+        + row["destination_number"]
+        + " &txfax("
+        + fax_file
+        + ")"
+    )
+    result = fs_cli(cmd)
+    return templates.TemplateResponse(
+        "fax.html",
+        {
+            "request": request,
+            "user": user,
+            "inbound": inbound,
+            "outbound": outbound,
+            "outbound_trunks": trunks,
             "message": "Outbound fax send command executed.",
             "send_result": result,
         },

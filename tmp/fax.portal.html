@@ -18,10 +18,17 @@
     <h3>Outbound Fax Job</h3>
     <form method="post" action="/fax/outbound" class="grid-form">
       <label>Destination Number<input name="destination_number" required /></label>
-      <label>Gateway Name<input name="gateway" placeholder="mygateway" required /></label>
-      <label>TIFF or PDF File Path<input name="file_path" placeholder="/usr/local/freeswitch/storage/fax/outbound/test.pdf" required /></label>
-      <button type="submit">Create Outbound Job</button>
+      <label>Trunk
+        <select name="gateway" required>
+          {% for t in outbound_trunks %}
+          <option value="{{ t.name }}">{{ t.name }}{% if t.proxy %} ({{ t.proxy }}){% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>File Path (any type)<input name="file_path" placeholder="/usr/local/freeswitch/storage/fax/outbound/test.pdf" required /></label>
+      <button type="submit">Send Fax</button>
     </form>
+    <p class="hint">Uploaded file path can be any type. The system converts it to TIFF then sends via selected trunk.</p>
   </div>
 </div>
 
@@ -44,7 +51,7 @@
 <div class="card">
   <h3>Outbound Jobs</h3>
   <table>
-    <tr><th>ID</th><th>Destination</th><th>Gateway</th><th>File</th><th>Action</th></tr>
+    <tr><th>ID</th><th>Destination</th><th>Trunk</th><th>File</th><th>Action</th></tr>
     {% for r in outbound %}
     <tr>
       <td>{{ r.id }}</td>
