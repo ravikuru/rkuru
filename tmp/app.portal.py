@@ -65,7 +65,25 @@ AUTO_BLOCK_INTERVAL_SECONDS = _env_int("CC_SECURITY_AUTOBLOCK_INTERVAL_SECONDS",
 AUTO_BLOCK_LOOKBACK_MINUTES = _env_int("CC_SECURITY_AUTOBLOCK_LOOKBACK_MINUTES", 5, 1)
 AUTO_BLOCK_MIN_EVENTS = _env_int("CC_SECURITY_AUTOBLOCK_MIN_EVENTS", 3, 1)
 
-AUTO_BLOCK_EVENT_TYPES = ("suspicious_request_pattern", "probing_404")
+AUTO_BLOCK_EVENT_TYPES = (
+    "suspicious_request_pattern",
+    "probing_404",
+    "possible_bruteforce",
+    "sip_invite_probe",
+    "conference_manage_unauthorized",
+    "conference_invite_unauthorized",
+    "conference_control_unauthorized",
+)
+SENSITIVE_ACTION_BLOCK_WINDOW_MINUTES = _env_int("CC_SENSITIVE_ACTION_BLOCK_WINDOW_MINUTES", 10, 1)
+SENSITIVE_ACTION_BLOCK_THRESHOLD = _env_int("CC_SENSITIVE_ACTION_BLOCK_THRESHOLD", 5, 2)
+SIP_INVITE_PROBE_ENABLED = os.getenv("CC_SIP_INVITE_PROBE_ENABLED", "1").strip() in {"1", "true", "yes", "on"}
+SIP_INVITE_SCAN_TAIL_BYTES = _env_int("CC_SIP_INVITE_SCAN_TAIL_BYTES", 3_000_000, 250_000)
+SIP_INVITE_SCAN_OFFSET_FILE = BASE_DIR / ".sip_invite_scan.offset"
+FREESWITCH_LOG_FILE = Path("/usr/local/freeswitch/log/freeswitch.log")
+SIP_INVITE_PROBE_RE = re.compile(
+    r"sofia/internal/([^@\s]+)@[^\s]+\s+receiving invite from\s+([0-9A-Fa-f:.]+):\d+",
+    re.IGNORECASE,
+)
 
 
 app = FastAPI(title="Callture Portal")
@@ -168,6 +186,13 @@ def log_bruteforce_if_needed(request: Request) -> None:
                 "possible_bruteforce",
                 severity="high",
                 details=f"Failed login attempts from IP in 10m: {recent}",
+            )
+            maybe_block_request_ip_for_event(
+                request,
+                event_type="possible_bruteforce",
+                threshold=3,
+                window_minutes=15,
+                reason_prefix="Repeated failed login activity",
             )
     except Exception:
         pass
@@ -298,7 +323,176 @@ def mark_ip_blocked(ip_text: str, reason: str, source_event: str, last_seen_at: 
         conn.commit()
 
 
+def maybe_autoblock_ip(
+    ip_text: str,
+    *,
+    source_event: str,
+    reason: str,
+    last_seen_at: str | None = None,
+) -> bool:
+    normalized = normalize_ipv4(ip_text)
+    if not is_public_ipv4(normalized):
+        return False
+    if not iptables_block_ip(normalized):
+        return False
+    mark_ip_blocked(normalized, reason, source_event, last_seen_at or datetime.now(UTC).isoformat())
+    log_system_security_event(
+        "ip_auto_blocked",
+        severity="high",
+        ip_address=normalized,
+        details=reason,
+    )
+    return True
+
+
+def maybe_block_request_ip_for_event(
+    request: Request,
+    *,
+    event_type: str,
+    threshold: int = SENSITIVE_ACTION_BLOCK_THRESHOLD,
+    window_minutes: int = SENSITIVE_ACTION_BLOCK_WINDOW_MINUTES,
+    reason_prefix: str = "Repeated unauthorized action",
+) -> None:
+    ip_text = normalize_ipv4(request_ip(request))
+    if not is_public_ipv4(ip_text):
+        return
+    cutoff = (datetime.now(UTC) - timedelta(minutes=max(1, window_minutes))).isoformat()
+    try:
+        with closing(db_conn()) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS hit_count, MAX(created_at) AS last_seen
+                FROM security_events
+                WHERE event_type = ? AND ip_address = ? AND created_at >= ?
+                """,
+                (event_type, ip_text, cutoff),
+            ).fetchone()
+        hit_count = int((row["hit_count"] if row else 0) or 0)
+        if hit_count < max(2, threshold):
+            return
+        maybe_autoblock_ip(
+            ip_text,
+            source_event=event_type,
+            reason=f"{reason_prefix}: {hit_count} events in {window_minutes}m",
+            last_seen_at=(row["last_seen"] if row else None) or datetime.now(UTC).isoformat(),
+        )
+    except Exception:
+        return
+
+
+def parse_proxy_host_for_acl(proxy: str) -> str:
+    raw = (proxy or "").strip()
+    if not raw:
+        return ""
+    no_scheme = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", "", raw).lstrip("/")
+    if "@" in no_scheme:
+        no_scheme = no_scheme.split("@", 1)[1]
+    if no_scheme.startswith("[") and "]" in no_scheme:
+        return no_scheme[1 : no_scheme.index("]")]
+    if ":" in no_scheme:
+        return no_scheme.split(":", 1)[0]
+    return no_scheme
+
+
+def trusted_trunk_ips() -> set[str]:
+    ips: set[str] = set()
+    try:
+        with closing(db_conn()) as conn:
+            rows = conn.execute(
+                """
+                SELECT proxy, ip_address
+                FROM trunks
+                WHERE enabled = 1
+                """
+            ).fetchall()
+        for row in rows:
+            proxy_host = parse_proxy_host_for_acl(str(row["proxy"] or ""))
+            proxy_ip = normalize_ipv4(proxy_host)
+            if proxy_ip:
+                ips.add(proxy_ip)
+            fixed_ip = normalize_ipv4(str(row["ip_address"] or ""))
+            if fixed_ip:
+                ips.add(fixed_ip)
+    except Exception:
+        pass
+    return ips
+
+
+def load_last_sip_scan_offset(file_path: Path) -> int:
+    try:
+        return int(file_path.read_text(encoding="utf-8").strip() or "0")
+    except Exception:
+        return -1
+
+
+def save_last_sip_scan_offset(file_path: Path, offset: int) -> None:
+    try:
+        file_path.write_text(str(max(0, int(offset))), encoding="utf-8")
+    except Exception:
+        return
+
+
+def log_and_block_sip_invite_probes() -> None:
+    if not SIP_INVITE_PROBE_ENABLED:
+        return
+    if not FREESWITCH_LOG_FILE.exists():
+        return
+    try:
+        size = FREESWITCH_LOG_FILE.stat().st_size
+    except Exception:
+        return
+    if size <= 0:
+        return
+    offset = load_last_sip_scan_offset(SIP_INVITE_SCAN_OFFSET_FILE)
+    if offset < 0 or offset > size:
+        offset = max(0, size - SIP_INVITE_SCAN_TAIL_BYTES)
+    trusted_ips = trusted_trunk_ips()
+    try:
+        with FREESWITCH_LOG_FILE.open("rb") as fh:
+            fh.seek(offset)
+            chunk = fh.read()
+    except Exception:
+        return
+    save_last_sip_scan_offset(SIP_INVITE_SCAN_OFFSET_FILE, size)
+    if not chunk:
+        return
+    text = chunk.decode("utf-8", errors="ignore")
+    hit_counts: dict[str, int] = {}
+    last_target: dict[str, str] = {}
+    for line in text.splitlines():
+        match = SIP_INVITE_PROBE_RE.search(line)
+        if not match:
+            continue
+        target = (match.group(1) or "").strip()
+        ip_text = normalize_ipv4(match.group(2) or "")
+        if not is_public_ipv4(ip_text):
+            continue
+        if ip_text in trusted_ips:
+            continue
+        hit_counts[ip_text] = hit_counts.get(ip_text, 0) + 1
+        if ip_text not in last_target:
+            last_target[ip_text] = target
+    for ip_text, hits in hit_counts.items():
+        target = last_target.get(ip_text, "")
+        details = f"SIP invite probe to internal target '{target}' ({hits} hit(s) since last scan)"
+        for _ in range(max(1, hits)):
+            log_system_security_event(
+                "sip_invite_probe",
+                severity="high",
+                ip_address=ip_text,
+                details=details,
+            )
+        if hits >= max(1, AUTO_BLOCK_MIN_EVENTS):
+            maybe_autoblock_ip(
+                ip_text,
+                source_event="sip_invite_probe",
+                reason=f"Auto-block SIP invite probe: {hits} hits since last scan (target {target or 'internal'})",
+                last_seen_at=datetime.now(UTC).isoformat(),
+            )
+
+
 def security_autoblock_tick() -> None:
+    log_and_block_sip_invite_probes()
     # Re-apply active DB blocks in case firewall restarted.
     with closing(db_conn()) as conn:
         active_rows = conn.execute(
@@ -3884,6 +4078,17 @@ def conference_create(
 ):
     user, denied = require_admin_or_redirect(request)
     if denied:
+        log_security_event(
+            request,
+            "conference_manage_unauthorized",
+            severity="high",
+            details="Unauthorized conference create/update attempt",
+        )
+        maybe_block_request_ip_for_event(
+            request,
+            event_type="conference_manage_unauthorized",
+            reason_prefix="Repeated unauthorized conference management",
+        )
         return denied
     room = (room_number or "").strip()
     name = (display_name or "").strip()
@@ -3993,6 +4198,17 @@ def conference_create(
 def conference_delete(request: Request, room_number: str = Form(...)):
     user, denied = require_admin_or_redirect(request)
     if denied:
+        log_security_event(
+            request,
+            "conference_manage_unauthorized",
+            severity="high",
+            details="Unauthorized conference delete attempt",
+        )
+        maybe_block_request_ip_for_event(
+            request,
+            event_type="conference_manage_unauthorized",
+            reason_prefix="Repeated unauthorized conference management",
+        )
         return denied
     room = (room_number or "").strip()
     with closing(db_conn()) as conn:
@@ -4024,6 +4240,17 @@ def conference_control(
 ):
     user, denied = require_admin_or_redirect(request)
     if denied:
+        log_security_event(
+            request,
+            "conference_control_unauthorized",
+            severity="high",
+            details="Unauthorized conference control attempt",
+        )
+        maybe_block_request_ip_for_event(
+            request,
+            event_type="conference_control_unauthorized",
+            reason_prefix="Repeated unauthorized conference control",
+        )
         return denied
     room = (room_number or "").strip()
     member = re.sub(r"\D+", "", (member_id or "").strip())
@@ -4117,6 +4344,17 @@ def conference_outcall(
 ):
     user, denied = require_admin_or_redirect(request)
     if denied:
+        log_security_event(
+            request,
+            "conference_invite_unauthorized",
+            severity="high",
+            details="Unauthorized conference outcall attempt",
+        )
+        maybe_block_request_ip_for_event(
+            request,
+            event_type="conference_invite_unauthorized",
+            reason_prefix="Repeated unauthorized conference invite/outcall",
+        )
         return denied
     room = (room_number or "").strip()
     selected_role = (role or "member").strip().lower()
