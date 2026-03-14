@@ -34,6 +34,7 @@ FAX_OUTBOUND_DIR = FAX_STORAGE_DIR / "outbound"
 FAX_TIFF_TO_PDF_SCRIPT = "/usr/local/bin/callture_fax_tiff_to_pdf.sh"
 FAX_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tga", ".svg"}
 FAX_UPLOAD_DIR = Path("/tmp/callture_fax_uploads")
+FAX_FIXED_FROM_NUMBER = "6472585272"
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -1137,12 +1138,42 @@ def save_uploaded_fax_file(file_upload: UploadFile) -> str:
     return str(dest)
 
 
+def sanitize_outbound_prefix_for_dialing(prefix: str) -> str:
+    raw = re.sub(r"\s+", "", (prefix or "").strip())
+    # '#' is not safe in SIP URI user part for Request-URI dialing.
+    return raw.replace("#", "")
+
+
 def apply_outbound_trunk_prefix(number: str, prefix: str) -> str:
     destination = (number or "").strip()
-    trunk_prefix = (prefix or "").strip()
+    trunk_prefix = sanitize_outbound_prefix_for_dialing(prefix)
     if not trunk_prefix:
         return destination
     return destination if destination.startswith(trunk_prefix) else f"{trunk_prefix}{destination}"
+
+
+def build_fax_bgapi_originate(gateway: str, destination_number: str, fax_file: str) -> str:
+    vars_block = (
+        "{ignore_early_media=true,"
+        f"origination_caller_id_number={FAX_FIXED_FROM_NUMBER},"
+        f"origination_caller_id_name={FAX_FIXED_FROM_NUMBER},"
+        f"effective_caller_id_number={FAX_FIXED_FROM_NUMBER},"
+        f"effective_caller_id_name={FAX_FIXED_FROM_NUMBER},"
+        f"sip_from_user={FAX_FIXED_FROM_NUMBER},"
+        f"sip_contact_user={FAX_FIXED_FROM_NUMBER}"
+        "}"
+    )
+    return (
+        "bgapi originate "
+        + vars_block
+        + "sofia/gateway/"
+        + gateway
+        + "/"
+        + destination_number
+        + " &txfax("
+        + fax_file
+        + ")"
+    )
 
 
 def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password: str, context: str) -> None:
@@ -1415,7 +1446,7 @@ def sync_outbound_routes_dialplan() -> None:
             continue
         expression, out_target = outbound_match_expression_and_target(dial_pattern, row["match_mode"] or "prefix")
         safe_name = re.sub(r"[^0-9A-Za-z_]+", "_", route_name).strip("_") or f"out_{route_id}"
-        outbound_prefix = (row["outbound_prefix"] or "").strip()
+        outbound_prefix = sanitize_outbound_prefix_for_dialing(str(row["outbound_prefix"] or ""))
         send_plus = bool(row["e164_send_plus"])
         actions = [
             '<action application="set" data="continue_on_fail=true"/>',
@@ -3403,15 +3434,7 @@ def fax_outbound_create(
             },
         )
 
-    cmd = (
-        "bgapi originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
-        + row["gateway"]
-        + "/"
-        + fax_target_number
-        + " &txfax("
-        + fax_file
-        + ")"
-    )
+    cmd = build_fax_bgapi_originate(str(row["gateway"] or ""), fax_target_number, fax_file)
     result = fs_cli(cmd)
     return templates.TemplateResponse(
         "fax.html",
@@ -3511,15 +3534,7 @@ def fax_outbound_send(
             },
         )
 
-    cmd = (
-        "bgapi originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
-        + row["gateway"]
-        + "/"
-        + fax_target_number
-        + " &txfax("
-        + fax_file
-        + ")"
-    )
+    cmd = build_fax_bgapi_originate(str(row["gateway"] or ""), fax_target_number, fax_file)
     result = fs_cli(cmd)
     return templates.TemplateResponse(
         "fax.html",
