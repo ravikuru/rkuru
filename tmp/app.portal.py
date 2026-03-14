@@ -419,6 +419,10 @@ def init_db() -> None:
                 gateway TEXT,
                 file_path TEXT,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                send_status TEXT NOT NULL DEFAULT 'pending',
+                failure_reason TEXT NOT NULL DEFAULT '',
+                last_result TEXT NOT NULL DEFAULT '',
+                last_attempt_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
 
@@ -576,6 +580,15 @@ def init_db() -> None:
         inbound_route_cols = {row["name"] for row in conn.execute("PRAGMA table_info(inbound_routes)").fetchall()}
         if "inbound_trunk_name" not in inbound_route_cols:
             conn.execute("ALTER TABLE inbound_routes ADD COLUMN inbound_trunk_name TEXT NOT NULL DEFAULT ''")
+        fax_cols = {row["name"] for row in conn.execute("PRAGMA table_info(fax_routes)").fetchall()}
+        if "send_status" not in fax_cols:
+            conn.execute("ALTER TABLE fax_routes ADD COLUMN send_status TEXT NOT NULL DEFAULT 'pending'")
+        if "failure_reason" not in fax_cols:
+            conn.execute("ALTER TABLE fax_routes ADD COLUMN failure_reason TEXT NOT NULL DEFAULT ''")
+        if "last_result" not in fax_cols:
+            conn.execute("ALTER TABLE fax_routes ADD COLUMN last_result TEXT NOT NULL DEFAULT ''")
+        if "last_attempt_at" not in fax_cols:
+            conn.execute("ALTER TABLE fax_routes ADD COLUMN last_attempt_at TEXT NOT NULL DEFAULT ''")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_created_at ON security_events(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip_address)")
@@ -1198,6 +1211,58 @@ def build_fax_bgapi_originate(gateway: str, destination_number: str, fax_file: s
         + fax_file
         + ")"
     )
+
+
+def classify_fax_command_result(result: str) -> tuple[str, str]:
+    text = (result or "").strip()
+    if text and ("+OK" in text or "Job-UUID" in text):
+        return "success", ""
+    if not text:
+        return "failed", "No response from FreeSWITCH."
+    return "failed", text[:500]
+
+
+def update_fax_send_status(
+    conn: sqlite3.Connection,
+    fax_id: int,
+    *,
+    status: str,
+    reason: str,
+    result: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE fax_routes
+        SET send_status = ?, failure_reason = ?, last_result = ?, last_attempt_at = ?
+        WHERE id = ?
+        """,
+        (
+            status,
+            (reason or "")[:500],
+            (result or "")[:2000],
+            datetime.now(UTC).isoformat(),
+            fax_id,
+        ),
+    )
+
+
+def fax_page_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+    inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
+    outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
+    trunks = conn.execute(
+        """
+        SELECT name, proxy, direction
+        FROM trunks
+        WHERE enabled = 1
+          AND direction IN ('outbound', 'both')
+        ORDER BY name
+        """
+    ).fetchall()
+    return {
+        "inbound": inbound,
+        "outbound": outbound,
+        "outbound_trunks": trunks,
+    }
 
 
 def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password: str, context: str) -> None:
@@ -3264,25 +3329,13 @@ def fax_page(request: Request):
     if denied:
         return denied
     with closing(db_conn()) as conn:
-        inbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'inbound' ORDER BY id DESC").fetchall()
-        outbound = conn.execute("SELECT * FROM fax_routes WHERE direction = 'outbound' ORDER BY id DESC").fetchall()
-        trunks = conn.execute(
-            """
-            SELECT name, proxy, direction
-            FROM trunks
-            WHERE enabled = 1
-              AND direction IN ('outbound', 'both')
-            ORDER BY name
-            """
-        ).fetchall()
+        payload = fax_page_payload(conn)
     return templates.TemplateResponse(
         "fax.html",
         {
             "request": request,
             "user": user,
-            "inbound": inbound,
-            "outbound": outbound,
-            "outbound_trunks": trunks,
+            **payload,
             "message": None,
             "send_result": None,
         },
@@ -3411,8 +3464,11 @@ def fax_outbound_create(
         fax_target_number = apply_outbound_trunk_prefix(destination_number.strip(), str(trunk["outbound_prefix"] or ""))
         conn.execute(
             """
-            INSERT INTO fax_routes(direction, destination_number, gateway, file_path, enabled, created_at)
-            VALUES('outbound', ?, ?, ?, 1, ?)
+            INSERT INTO fax_routes(
+                direction, destination_number, gateway, file_path, enabled,
+                send_status, failure_reason, last_result, last_attempt_at, created_at
+            )
+            VALUES('outbound', ?, ?, ?, 1, 'pending', '', '', '', ?)
             """,
             (destination_number.strip(), trunk_name, source_path, datetime.now(UTC).isoformat()),
         )
@@ -3445,14 +3501,22 @@ def fax_outbound_create(
     try:
         fax_file = prepare_outbound_fax_file(str(row["file_path"] or ""), int(row["id"]))
     except Exception as exc:
+        with closing(db_conn()) as conn:
+            update_fax_send_status(
+                conn,
+                int(row["id"]),
+                status="failed",
+                reason=f"Conversion failed: {exc}",
+                result=f"conversion_error: {exc}",
+            )
+            conn.commit()
+            payload = fax_page_payload(conn)
         return templates.TemplateResponse(
             "fax.html",
             {
                 "request": request,
                 "user": user,
-                "inbound": inbound,
-                "outbound": outbound,
-                "outbound_trunks": trunks,
+                **payload,
                 "message": f"Outbound fax file error: {exc}",
                 "send_result": None,
             },
@@ -3465,15 +3529,24 @@ def fax_outbound_create(
         str(trunk["proxy"] or ""),
     )
     result = fs_cli(cmd)
+    status, reason = classify_fax_command_result(result)
+    with closing(db_conn()) as conn:
+        update_fax_send_status(
+            conn,
+            int(row["id"]),
+            status=status,
+            reason=reason,
+            result=result,
+        )
+        conn.commit()
+        payload = fax_page_payload(conn)
     return templates.TemplateResponse(
         "fax.html",
         {
             "request": request,
             "user": user,
-            "inbound": inbound,
-            "outbound": outbound,
-            "outbound_trunks": trunks,
-            "message": "Fax send command queued.",
+            **payload,
+            "message": "Fax send command queued." if status == "success" else "Fax send command failed.",
             "send_result": result,
         },
     )
@@ -3519,28 +3592,44 @@ def fax_outbound_send(
             },
         )
     if trunk is None:
+        with closing(db_conn()) as conn:
+            update_fax_send_status(
+                conn,
+                int(row["id"]),
+                status="failed",
+                reason=f"Trunk not found: {row['gateway']}",
+                result="trunk_not_found",
+            )
+            conn.commit()
+            payload = fax_page_payload(conn)
         return templates.TemplateResponse(
             "fax.html",
             {
                 "request": request,
                 "user": user,
-                "inbound": inbound,
-                "outbound": outbound,
-                "outbound_trunks": trunks,
+                **payload,
                 "message": f"Outbound trunk {row['gateway']} not found.",
                 "send_result": None,
             },
         )
     trunk_direction = normalize_trunk_direction(str(trunk["direction"] or "outbound"))
     if not bool(trunk["enabled"]) or trunk_direction not in {"outbound", "both"}:
+        with closing(db_conn()) as conn:
+            update_fax_send_status(
+                conn,
+                int(row["id"]),
+                status="failed",
+                reason=f"Trunk not outbound-enabled: {row['gateway']}",
+                result="trunk_not_outbound_enabled",
+            )
+            conn.commit()
+            payload = fax_page_payload(conn)
         return templates.TemplateResponse(
             "fax.html",
             {
                 "request": request,
                 "user": user,
-                "inbound": inbound,
-                "outbound": outbound,
-                "outbound_trunks": trunks,
+                **payload,
                 "message": f"Outbound trunk {row['gateway']} is not enabled for outbound.",
                 "send_result": None,
             },
@@ -3550,14 +3639,22 @@ def fax_outbound_send(
     try:
         fax_file = prepare_outbound_fax_file(str(row["file_path"] or ""), int(row["id"]))
     except Exception as exc:
+        with closing(db_conn()) as conn:
+            update_fax_send_status(
+                conn,
+                int(row["id"]),
+                status="failed",
+                reason=f"Conversion failed: {exc}",
+                result=f"conversion_error: {exc}",
+            )
+            conn.commit()
+            payload = fax_page_payload(conn)
         return templates.TemplateResponse(
             "fax.html",
             {
                 "request": request,
                 "user": user,
-                "inbound": inbound,
-                "outbound": outbound,
-                "outbound_trunks": trunks,
+                **payload,
                 "message": f"Outbound fax file error: {exc}",
                 "send_result": None,
             },
@@ -3570,15 +3667,24 @@ def fax_outbound_send(
         str(trunk["proxy"] or ""),
     )
     result = fs_cli(cmd)
+    status, reason = classify_fax_command_result(result)
+    with closing(db_conn()) as conn:
+        update_fax_send_status(
+            conn,
+            int(row["id"]),
+            status=status,
+            reason=reason,
+            result=result,
+        )
+        conn.commit()
+        payload = fax_page_payload(conn)
     return templates.TemplateResponse(
         "fax.html",
         {
             "request": request,
             "user": user,
-            "inbound": inbound,
-            "outbound": outbound,
-            "outbound_trunks": trunks,
-            "message": "Outbound fax send command queued.",
+            **payload,
+            "message": "Outbound fax send command queued." if status == "success" else "Outbound fax send failed.",
             "send_result": result,
         },
     )

@@ -52,13 +52,31 @@
 <div class="card">
   <h3>Outbound Jobs</h3>
   <table>
-    <tr><th>ID</th><th>Destination</th><th>Trunk</th><th>File</th><th>Action</th></tr>
+    <tr><th>ID</th><th>Destination</th><th>Trunk</th><th>File</th><th>Status</th><th>Action</th></tr>
     {% for r in outbound %}
     <tr>
       <td>{{ r.id }}</td>
       <td>{{ r.destination_number }}</td>
       <td>{{ r.gateway }}</td>
       <td>{{ r.file_path }}</td>
+      <td>
+        {% set st = (r.send_status or "pending") %}
+        {% if st == "success" %}
+          <span class="reg-badge reg-on">Success</span>
+        {% elif st == "failed" %}
+          <button
+            type="button"
+            class="reg-badge reg-off"
+            style="border:none; cursor:pointer;"
+            onclick='showFaxFailure({{ (r.failure_reason or "Unknown failure")|tojson }})'
+            title="Click to view failure reason"
+          >
+            Failed
+          </button>
+        {% else %}
+          <span class="reg-badge reg-disabled">Pending</span>
+        {% endif %}
+      </td>
       <td>
         <form method="post" action="/fax/outbound/send">
           <input type="hidden" name="fax_id" value="{{ r.id }}" />
@@ -73,4 +91,9 @@
   <pre>{{ send_result }}</pre>
   {% endif %}
 </div>
+<script>
+  function showFaxFailure(reason) {
+    alert(reason || "Unknown failure");
+  }
+</script>
 {% endblock %}
