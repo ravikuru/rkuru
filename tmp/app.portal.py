@@ -2004,9 +2004,11 @@ def route_trunk_create(
     direction: str = Form("inbound"),
     in_prefix: str = Form(""),
     did_pattern: str = Form(""),
+    inbound_did_pattern: str = Form(""),
     inbound_match_mode: str = Form("exact"),
     out_prefix: str = Form(""),
     dial_pattern: str = Form(""),
+    dialout_pattern: str = Form(""),
     outbound_match_mode: str = Form("prefix"),
     # Kept for backward compatibility with older form payloads.
     ip_address: str = Form(""),
@@ -2022,12 +2024,17 @@ def route_trunk_create(
     proxy_value = proxy.strip()
     direction_value = normalize_trunk_direction(direction)
     inbound_prefix_value = in_prefix.strip()
-    did_pattern_value = did_pattern.strip()
+    did_pattern_value = did_pattern.strip() or inbound_did_pattern.strip()
     outbound_prefix_value = (out_prefix or "").strip() or (outbound_prefix_custom or "").strip() or (outbound_prefix_selection or "").strip()
-    dial_pattern_value = dial_pattern.strip()
+    dial_pattern_value = dial_pattern.strip() or dialout_pattern.strip()
     inbound_mode_value = normalize_match_mode(inbound_match_mode)
     outbound_mode_value = normalize_match_mode(outbound_match_mode, outbound=True)
     ip_value = ip_address.strip() or proxy_value
+    default_pattern = r"^(1?\d{10})$"
+    if direction_value == "inbound" and not did_pattern_value:
+        did_pattern_value = default_pattern
+    if direction_value == "outbound" and not dial_pattern_value:
+        dial_pattern_value = default_pattern
     if not trunk_name or not proxy_value:
         with closing(db_conn()) as conn:
             payload = routes_page_payload(conn)
@@ -2035,36 +2042,21 @@ def route_trunk_create(
             "routes.html",
             {"request": request, "user": user, **payload, "message": None, "error": "Trunk name and proxy are required."},
         )
-    if direction_value == "inbound" and not did_pattern_value:
-        with closing(db_conn()) as conn:
-            payload = routes_page_payload(conn)
-        return templates.TemplateResponse(
-            "routes.html",
-            {
-                "request": request,
-                "user": user,
-                **payload,
-                "message": None,
-                "error": "Inbound DID / Pattern is required for inbound trunk.",
-            },
-        )
-    if direction_value == "outbound" and not dial_pattern_value:
-        with closing(db_conn()) as conn:
-            payload = routes_page_payload(conn)
-        return templates.TemplateResponse(
-            "routes.html",
-            {
-                "request": request,
-                "user": user,
-                **payload,
-                "message": None,
-                "error": "Dialout Number / Pattern is required for outbound trunk.",
-            },
-        )
-
     with closing(db_conn()) as conn:
-        existing = conn.execute("SELECT created_at FROM trunks WHERE name = ?", (trunk_name,)).fetchone()
+        existing = conn.execute("SELECT * FROM trunks WHERE name = ?", (trunk_name,)).fetchone()
         created_at = (existing["created_at"] if existing else datetime.now(UTC).isoformat())
+        existing_in_prefix = (existing["in_prefix"] if existing else "") or ""
+        existing_in_pattern = (existing["inbound_did_pattern"] if existing else "") or ""
+        existing_in_mode = (existing["inbound_match_mode"] if existing else "exact") or "exact"
+        existing_out_prefix = (existing["outbound_prefix"] if existing else "") or ""
+        existing_out_pattern = (existing["dialout_pattern"] if existing else "") or ""
+        existing_out_mode = (existing["outbound_match_mode"] if existing else "prefix") or "prefix"
+        save_in_prefix = inbound_prefix_value if direction_value == "inbound" else existing_in_prefix
+        save_in_pattern = did_pattern_value if direction_value == "inbound" else existing_in_pattern
+        save_in_mode = inbound_mode_value if direction_value == "inbound" else existing_in_mode
+        save_out_prefix = outbound_prefix_value if direction_value == "outbound" else existing_out_prefix
+        save_out_pattern = dial_pattern_value if direction_value == "outbound" else existing_out_pattern
+        save_out_mode = outbound_mode_value if direction_value == "outbound" else existing_out_mode
         conn.execute(
             """
             INSERT OR REPLACE INTO trunks(
@@ -2084,12 +2076,12 @@ def route_trunk_create(
                 "",
                 "",
                 direction_value,
-                inbound_prefix_value if direction_value == "inbound" else "",
-                did_pattern_value if direction_value == "inbound" else "",
-                inbound_mode_value if direction_value == "inbound" else "exact",
-                dial_pattern_value if direction_value == "outbound" else "",
-                outbound_mode_value if direction_value == "outbound" else "prefix",
-                outbound_prefix_value if direction_value == "outbound" else "",
+                save_in_prefix,
+                save_in_pattern,
+                save_in_mode,
+                save_out_pattern,
+                save_out_mode,
+                save_out_prefix,
                 0,
                 0,
                 1 if as_bool(enabled) else 0,
