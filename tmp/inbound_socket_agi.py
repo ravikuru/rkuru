@@ -1173,9 +1173,15 @@ def collect_intent_with_retry(
     caller: str,
     destination: str,
 ) -> tuple[str, str, dict[str, str] | None]:
-    for attempt_idx in range(1, max(1, MAX_INTENT_ATTEMPTS) + 1):
+    total_attempts = max(1, MAX_INTENT_ATTEMPTS)
+    prompts: list[tuple[str, str]] = [(PROMPT_GREETING_TEXT, PROMPT_GREETING)]
+    for _ in range(1, total_attempts):
+        prompts.append((PROMPT_RETRY_TEXT, PROMPT_RETRY))
+
+    for attempt_idx, (prompt_text, prompt_wav) in enumerate(prompts, start=1):
         if not uuid_exists(conn, call_uuid):
             break
+        speak(conn, prompt_text, prompt_wav, cacheable=True)
         wav_path = capture_intent_wav(conn, call_uuid, AI_RECORD_SECONDS)
         if not wav_path:
             log(f"intent_capture_empty uuid={call_uuid} attempt={attempt_idx}")
@@ -1190,19 +1196,16 @@ def collect_intent_with_retry(
                 intent = g_intent
                 if not transcript:
                     transcript = g_transcript
+        if intent not in {"sales", "support"}:
+            intent = "invalid"
         log(
             f"intent_result uuid={call_uuid} attempt={attempt_idx} "
             f"intent={intent} transcript={transcript[:120]}"
         )
-        if intent in {"sales", "support", "billing"}:
+        if intent in {"sales", "support"}:
             queue_cfg = queue_config_by_intent(intent)
             if queue_cfg:
                 return intent, transcript, queue_cfg
-    # Business fallback: if caller provides no/unclear input, route to sales.
-    sales_cfg = queue_config_by_intent("sales")
-    if sales_cfg:
-        log(f"intent_default_route uuid={call_uuid} intent=sales reason=no_input_or_unclear")
-        return "sales", "", sales_cfg
     return "invalid", "", None
 
 
