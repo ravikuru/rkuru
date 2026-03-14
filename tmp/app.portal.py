@@ -2171,6 +2171,7 @@ def dialplan_route_create(
     inbound_trunk_name: str = Form(""),
     application: str = Form("queue"),
     action_value: str = Form(""),
+    route_id: str = Form(""),
     enabled: str = Form("true"),
 ):
     user, denied = require_admin_or_redirect(request)
@@ -2254,6 +2255,7 @@ def dialplan_route_create(
     if dest_type == "fax" and not dest_value:
         # Default fax action to DID if no explicit fax inbound DID chosen.
         dest_value = did_value
+    edit_route_id = int(route_id) if str(route_id or "").strip().isdigit() else 0
 
     with closing(db_conn()) as conn:
         trunk_filter = (inbound_trunk_name or "").strip()
@@ -2343,24 +2345,57 @@ def dialplan_route_create(
                 dest_value = did_value
 
         route_name = f"Dialplan In {did_value} -> {dest_type}:{dest_value}"
-        conn.execute(
-            """
-            INSERT INTO inbound_routes(
-                name, did_pattern, match_mode, inbound_trunk_name, destination_type, destination_value, enabled, created_at
+        if edit_route_id:
+            existing = conn.execute("SELECT id FROM inbound_routes WHERE id = ?", (edit_route_id,)).fetchone()
+            if existing is None:
+                payload = routes_page_payload(conn)
+                return templates.TemplateResponse(
+                    "routes.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"Inbound route {edit_route_id} not found for edit.",
+                    },
+                )
+            conn.execute(
+                """
+                UPDATE inbound_routes
+                SET name = ?, did_pattern = ?, match_mode = ?, inbound_trunk_name = ?,
+                    destination_type = ?, destination_value = ?, enabled = ?
+                WHERE id = ?
+                """,
+                (
+                    route_name,
+                    did_value,
+                    "exact",
+                    trunk_filter,
+                    dest_type,
+                    dest_value,
+                    1 if as_bool(enabled) else 0,
+                    edit_route_id,
+                ),
             )
-            VALUES(?,?,?,?,?,?,?,?)
-            """,
-            (
-                route_name,
-                did_value,
-                "exact",
-                trunk_filter,
-                dest_type,
-                dest_value,
-                1 if as_bool(enabled) else 0,
-                datetime.now(UTC).isoformat(),
-            ),
-        )
+        else:
+            conn.execute(
+                """
+                INSERT INTO inbound_routes(
+                    name, did_pattern, match_mode, inbound_trunk_name, destination_type, destination_value, enabled, created_at
+                )
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    route_name,
+                    did_value,
+                    "exact",
+                    trunk_filter,
+                    dest_type,
+                    dest_value,
+                    1 if as_bool(enabled) else 0,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
         conn.commit()
         payload = routes_page_payload(conn)
 
@@ -2372,7 +2407,7 @@ def dialplan_route_create(
             "user": user,
             **payload,
             "message": (
-                f"Dialplan saved: inbound {did_value} "
+                f"Dialplan {'updated' if edit_route_id else 'saved'}: inbound {did_value} "
                 f"{'(all trunks)' if not trunk_filter else f'(trunk: {trunk_filter})'} "
                 f"-> {dest_type} {dest_value}"
             ),

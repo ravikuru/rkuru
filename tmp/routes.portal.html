@@ -7,6 +7,7 @@
 <div class="card">
   <h3>Dialplan File</h3>
   <form method="post" action="/routes/dialplan" class="grid-form" id="dialplan-form">
+    <input type="hidden" id="dp-route-id" name="route_id" value="" />
     <label>File Type (Inbound/Outbound)
       <select id="dp-file-type" name="file_type">
         <option value="inbound">inbound</option>
@@ -41,7 +42,8 @@
       </label>
     </div>
     <input type="hidden" name="enabled" value="true" />
-    <button type="submit">Save Dialplan</button>
+    <button id="dp-save-btn" type="submit">Save Dialplan</button>
+    <button id="dp-cancel-edit-btn" type="button" style="display:none">Cancel Edit</button>
   </form>
   <p class="hint">Inbound calls to the destination number will go to the selected application/action.</p>
   <p class="hint" id="dp-outbound-note" style="display:none">Outbound option is reserved. Use inbound for DID to application routing.</p>
@@ -60,6 +62,7 @@
       <th>Action</th>
       <th>Enabled</th>
       <th>Created</th>
+      <th>Actions</th>
     </tr>
     {% for r in inbound_routes %}
     <tr>
@@ -72,6 +75,19 @@
       <td>{{ r.destination_value or "-" }}</td>
       <td>{{ r.enabled }}</td>
       <td>{{ r.created_at }}</td>
+      <td>
+        <button
+          type="button"
+          class="dialplan-edit-btn"
+          data-route-id="{{ r.id }}"
+          data-did-pattern="{{ r.did_pattern }}"
+          data-inbound-trunk-name="{{ r.inbound_trunk_name or '' }}"
+          data-destination-type="{{ r.destination_type }}"
+          data-destination-value="{{ r.destination_value or '' }}"
+        >
+          Edit
+        </button>
+      </td>
     </tr>
     {% endfor %}
     {% for r in outbound_routes %}
@@ -85,6 +101,7 @@
       <td>-</td>
       <td>{{ r.enabled }}</td>
       <td>{{ r.created_at }}</td>
+      <td>-</td>
     </tr>
     {% endfor %}
   </table>
@@ -139,6 +156,24 @@
     });
   }
 
+  function setDialplanActionValue(value) {
+    const actionInput = document.getElementById("dp-action-value");
+    if (!actionInput) {
+      return;
+    }
+    const candidate = value || "";
+    const hasOption = Array.from(actionInput.options).some(function (opt) {
+      return opt.value === candidate;
+    });
+    if (!hasOption && candidate) {
+      const custom = document.createElement("option");
+      custom.value = candidate;
+      custom.textContent = candidate;
+      actionInput.appendChild(custom);
+    }
+    actionInput.value = candidate;
+  }
+
   function applyDialplanTypeVisibility() {
     const fileType = document.getElementById("dp-file-type");
     const inboundFields = document.getElementById("dp-inbound-fields");
@@ -157,15 +192,90 @@
     action.required = isInbound;
   }
 
+  function appValueFromDestinationType(destType) {
+    const key = (destType || "").toLowerCase();
+    if (key === "fax") return "fax in";
+    if (key === "vpbx") return "vpbx";
+    if (key === "conference") return "conference";
+    return "queue";
+  }
+
+  function editDialplanFromButton(button) {
+    const routeId = document.getElementById("dp-route-id");
+    const fileType = document.getElementById("dp-file-type");
+    const countryCode = document.getElementById("dp-country-code");
+    const destination = document.getElementById("dp-destination-number");
+    const inboundTrunk = document.getElementById("dp-inbound-trunk");
+    const appInput = document.getElementById("dp-application");
+    const saveBtn = document.getElementById("dp-save-btn");
+    const cancelBtn = document.getElementById("dp-cancel-edit-btn");
+    if (!button || !routeId || !fileType || !countryCode || !destination || !inboundTrunk || !appInput || !saveBtn || !cancelBtn) {
+      return;
+    }
+
+    const did = (button.dataset.didPattern || "").trim();
+    if (/^1\d{10}$/.test(did)) {
+      countryCode.value = "1";
+      destination.value = did.slice(1);
+    } else {
+      countryCode.value = "1";
+      destination.value = did;
+    }
+
+    routeId.value = button.dataset.routeId || "";
+    fileType.value = "inbound";
+    inboundTrunk.value = button.dataset.inboundTrunkName || "";
+    appInput.value = appValueFromDestinationType(button.dataset.destinationType || "");
+    refreshDialplanActionOptions();
+    setDialplanActionValue(button.dataset.destinationValue || "");
+    applyDialplanTypeVisibility();
+    saveBtn.textContent = "Update Dialplan";
+    cancelBtn.style.display = "inline-block";
+    destination.scrollIntoView({ behavior: "smooth", block: "center" });
+    destination.focus();
+  }
+
+  function resetDialplanForm() {
+    const form = document.getElementById("dialplan-form");
+    const routeId = document.getElementById("dp-route-id");
+    const fileType = document.getElementById("dp-file-type");
+    const countryCode = document.getElementById("dp-country-code");
+    const destination = document.getElementById("dp-destination-number");
+    const inboundTrunk = document.getElementById("dp-inbound-trunk");
+    const appInput = document.getElementById("dp-application");
+    const saveBtn = document.getElementById("dp-save-btn");
+    const cancelBtn = document.getElementById("dp-cancel-edit-btn");
+    if (form) form.reset();
+    if (routeId) routeId.value = "";
+    if (fileType) fileType.value = "inbound";
+    if (countryCode) countryCode.value = "1";
+    if (destination) destination.value = "";
+    if (inboundTrunk) inboundTrunk.value = "";
+    if (appInput) appInput.value = "queue";
+    refreshDialplanActionOptions();
+    if (saveBtn) saveBtn.textContent = "Save Dialplan";
+    if (cancelBtn) cancelBtn.style.display = "none";
+    applyDialplanTypeVisibility();
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     const fileType = document.getElementById("dp-file-type");
     const appInput = document.getElementById("dp-application");
+    const cancelBtn = document.getElementById("dp-cancel-edit-btn");
     if (fileType) {
       fileType.addEventListener("change", applyDialplanTypeVisibility);
     }
     if (appInput) {
       appInput.addEventListener("change", refreshDialplanActionOptions);
     }
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", resetDialplanForm);
+    }
+    document.querySelectorAll(".dialplan-edit-btn").forEach(function (button) {
+      button.addEventListener("click", function () {
+        editDialplanFromButton(button);
+      });
+    });
     refreshDialplanActionOptions();
     applyDialplanTypeVisibility();
   });
