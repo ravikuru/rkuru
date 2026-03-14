@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Fax In/Out</h2>
+{% if message %}<p class="ok">{{ message }}</p>{% endif %}
+
+<div class="grid">
+  <div class="card">
+    <h3>Inbound Fax Route</h3>
+    <form method="post" action="/fax/inbound" class="grid-form">
+      <label>DID Number<input name="did" required /></label>
+      <label>Email Notify (optional)<input name="email" placeholder="ops@example.com" /></label>
+      <button type="submit">Add Inbound Route</button>
+    </form>
+    <p class="hint">Inbound faxes are saved under <code>/usr/local/freeswitch/storage/fax/inbound/</code> as TIFF and auto-converted to PDF.</p>
+  </div>
+
+  <div class="card">
+    <h3>Outbound Fax Job</h3>
+    <form method="post" action="/fax/outbound" class="grid-form">
+      <label>Destination Number<input name="destination_number" required /></label>
+      <label>Gateway Name<input name="gateway" placeholder="mygateway" required /></label>
+      <label>TIFF or PDF File Path<input name="file_path" placeholder="/usr/local/freeswitch/storage/fax/outbound/test.pdf" required /></label>
+      <button type="submit">Create Outbound Job</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Inbound Routes</h3>
+  <table>
+    <tr><th>ID</th><th>DID</th><th>Email</th><th>Enabled</th><th>Created</th></tr>
+    {% for r in inbound %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td>{{ r.did }}</td>
+      <td>{{ r.email or "-" }}</td>
+      <td>{{ r.enabled }}</td>
+      <td>{{ r.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Outbound Jobs</h3>
+  <table>
+    <tr><th>ID</th><th>Destination</th><th>Gateway</th><th>File</th><th>Action</th></tr>
+    {% for r in outbound %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td>{{ r.destination_number }}</td>
+      <td>{{ r.gateway }}</td>
+      <td>{{ r.file_path }}</td>
+      <td>
+        <form method="post" action="/fax/outbound/send">
+          <input type="hidden" name="fax_id" value="{{ r.id }}" />
+          <button type="submit">Send Now</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% if send_result %}
+  <h4>Send Result</h4>
+  <pre>{{ send_result }}</pre>
+  {% endif %}
+</div>
+{% endblock %}

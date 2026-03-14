@@ -27,6 +27,10 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "portal.db"
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+FAX_STORAGE_DIR = Path("/usr/local/freeswitch/storage/fax")
+FAX_INBOUND_DIR = FAX_STORAGE_DIR / "inbound"
+FAX_OUTBOUND_DIR = FAX_STORAGE_DIR / "outbound"
+FAX_TIFF_TO_PDF_SCRIPT = "/usr/local/bin/callture_fax_tiff_to_pdf.sh"
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -944,6 +948,100 @@ def write_root_file(path: str, content: str) -> None:
     )
 
 
+def ensure_fax_runtime() -> None:
+    subprocess.run(
+        ["sudo", "mkdir", "-p", str(FAX_INBOUND_DIR), str(FAX_OUTBOUND_DIR)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    converter = textwrap.dedent(
+        """\
+        #!/usr/bin/env bash
+        set -euo pipefail
+        src="${1:-}"
+        if [[ -z "$src" || ! -f "$src" ]]; then
+          exit 0
+        fi
+        case "${src,,}" in
+          *.tif|*.tiff) ;;
+          *) exit 0 ;;
+        esac
+        dst="${src%.*}.pdf"
+        if command -v tiff2pdf >/dev/null 2>&1; then
+          tiff2pdf -o "$dst" "$src" >/dev/null 2>&1
+          exit 0
+        fi
+        if command -v gs >/dev/null 2>&1; then
+          gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -sOutputFile="$dst" "$src" >/dev/null 2>&1
+          exit 0
+        fi
+        if command -v convert >/dev/null 2>&1; then
+          convert "$src" "$dst" >/dev/null 2>&1
+          exit 0
+        fi
+        exit 1
+        """
+    )
+    write_root_file(FAX_TIFF_TO_PDF_SCRIPT, converter)
+    subprocess.run(
+        ["sudo", "chmod", "0755", FAX_TIFF_TO_PDF_SCRIPT],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def fax_receive_actions(fax_tag: str) -> list[str]:
+    safe_tag = re.sub(r"[^0-9A-Za-z_-]+", "_", (fax_tag or "fax"))
+    base = f"{FAX_INBOUND_DIR}/in_${{strftime(%Y%m%d-%H%M%S)}}_{safe_tag}"
+    return [
+        '<action application="answer"/>',
+        '<action application="set" data="fax_enable_t38=true"/>',
+        '<action application="set" data="fax_verbose=true"/>',
+        f'<action application="set" data="fax_tiff_path={base}.tif"/>',
+        '<action application="rxfax" data="${fax_tiff_path}"/>',
+        f'<action application="system" data="{FAX_TIFF_TO_PDF_SCRIPT} ${{fax_tiff_path}}"/>',
+        '<action application="hangup" data="NORMAL_CLEARING"/>',
+    ]
+
+
+def prepare_outbound_fax_file(file_path: str, fax_id: int) -> str:
+    source = Path((file_path or "").strip())
+    if not source.is_absolute():
+        source = (BASE_DIR / source).resolve()
+    if not source.exists():
+        raise ValueError(f"Fax source file does not exist: {source}")
+    if " " in str(source):
+        raise ValueError("Fax file path cannot contain spaces.")
+    suffix = source.suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        return str(source)
+    if suffix != ".pdf":
+        raise ValueError("Outbound fax source must be TIFF or PDF.")
+
+    ensure_fax_runtime()
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    out_tiff = FAX_OUTBOUND_DIR / f"fax_out_{fax_id}_{stamp}.tif"
+    subprocess.run(
+        [
+            "sudo",
+            "gs",
+            "-q",
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-sDEVICE=tiffg4",
+            "-r204x196",
+            f"-sOutputFile={out_tiff}",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return str(out_tiff)
+
+
 def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password: str, context: str) -> None:
     xml = textwrap.dedent(
         f"""\
@@ -972,6 +1070,7 @@ def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password
 
 
 def sync_fax_inbound_dialplan() -> None:
+    ensure_fax_runtime()
     with closing(db_conn()) as conn:
         rows = conn.execute(
             """
@@ -984,16 +1083,13 @@ def sync_fax_inbound_dialplan() -> None:
     blocks: list[str] = []
     for row in rows:
         did = row["did"]
+        actions = " ".join(fax_receive_actions(str(did)))
         blocks.append(
             textwrap.dedent(
                 f"""\
                   <extension name="fax_in_{did}">
                     <condition field="destination_number" expression="^{did}$">
-                      <action application="answer"/>
-                      <action application="set" data="fax_enable_t38=true"/>
-                      <action application="set" data="fax_verbose=true"/>
-                      <action application="rxfax" data="/usr/local/freeswitch/storage/fax/in_${{strftime(%Y%m%d-%H%M%S)}}_{did}.tif"/>
-                      <action application="hangup" data="NORMAL_CLEARING"/>
+                      {actions}
                     </condition>
                   </extension>
                 """
@@ -1099,6 +1195,7 @@ def sync_trunks_to_freeswitch() -> None:
 
 
 def sync_inbound_routes_dialplan() -> None:
+    ensure_fax_runtime()
     with closing(db_conn()) as conn:
         rows = conn.execute(
             """
@@ -1149,19 +1246,8 @@ def sync_inbound_routes_dialplan() -> None:
                 continue
             actions.append(f'<action application="transfer" data="{destination_value} XML default"/>')
         elif destination_type == "fax":
-            fax_tag = re.sub(r"[^0-9A-Za-z_-]+", "_", (destination_value or did_pattern or str(route_id)))
-            actions.extend(
-                [
-                    '<action application="answer"/>',
-                    '<action application="set" data="fax_enable_t38=true"/>',
-                    '<action application="set" data="fax_verbose=true"/>',
-                    (
-                        '<action application="rxfax" '
-                        f'data="/usr/local/freeswitch/storage/fax/in_${{strftime(%Y%m%d-%H%M%S)}}_{fax_tag}.tif"/>'
-                    ),
-                    '<action application="hangup" data="NORMAL_CLEARING"/>',
-                ]
-            )
+            fax_tag = destination_value or did_pattern or str(route_id)
+            actions.extend(fax_receive_actions(fax_tag))
         elif destination_type == "conference":
             if not destination_value:
                 continue
@@ -1269,6 +1355,8 @@ def startup() -> None:
     init_db()
     load_platform()
     sync_trunks_to_freeswitch()
+    sync_fax_inbound_dialplan()
+    sync_conference_dialplan()
     sync_inbound_routes_dialplan()
     sync_outbound_routes_dialplan()
     start_security_autoblock_worker()
@@ -2820,13 +2908,28 @@ def fax_outbound_send(
             {"request": request, "user": user, "inbound": inbound, "outbound": outbound, "message": "Fax job not found", "send_result": None},
         )
 
+    try:
+        fax_file = prepare_outbound_fax_file(str(row["file_path"] or ""), int(row["id"]))
+    except Exception as exc:
+        return templates.TemplateResponse(
+            "fax.html",
+            {
+                "request": request,
+                "user": user,
+                "inbound": inbound,
+                "outbound": outbound,
+                "message": f"Outbound fax file error: {exc}",
+                "send_result": None,
+            },
+        )
+
     cmd = (
         "originate {ignore_early_media=true,origination_caller_id_number=FAX}sofia/gateway/"
         + row["gateway"]
         + "/"
         + row["destination_number"]
         + " &txfax("
-        + row["file_path"]
+        + fax_file
         + ")"
     )
     result = fs_cli(cmd)
