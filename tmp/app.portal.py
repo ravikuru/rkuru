@@ -1183,20 +1183,21 @@ def sip_host_from_proxy(proxy: str) -> str:
 
 def build_fax_bgapi_originate(gateway: str, destination_number: str, fax_file: str, from_host: str) -> str:
     safe_from_host = sip_host_from_proxy(from_host)
+    safe_display_name = FAX_FIXED_FROM_NAME.replace("'", "")
     from_uri = f"sip:{FAX_FIXED_FROM_NUMBER}@{safe_from_host}" if safe_from_host else ""
     vars_block = (
         "{ignore_early_media=true,"
         f"origination_caller_id_number={FAX_FIXED_FROM_NUMBER},"
-        f"origination_caller_id_name={FAX_FIXED_FROM_NAME},"
+        f"origination_caller_id_name='{safe_display_name}',"
         f"effective_caller_id_number={FAX_FIXED_FROM_NUMBER},"
-        f"effective_caller_id_name={FAX_FIXED_FROM_NAME},"
-        f"sip_from_display={FAX_FIXED_FROM_NAME},"
+        f"effective_caller_id_name='{safe_display_name}',"
+        f"sip_from_display='{safe_display_name}',"
         f"sip_from_user={FAX_FIXED_FROM_NUMBER},"
         f"sip_contact_user={FAX_FIXED_FROM_NUMBER}"
         "}"
     )
     if safe_from_host:
-        vars_block = vars_block[:-1] + f",sip_from_host={safe_from_host},sip_contact_host={safe_from_host}"
+        vars_block = vars_block[:-1] + f",sip_from_host={safe_from_host}"
         if from_uri:
             vars_block += f",sip_from_uri={from_uri},sip_invite_from_uri={from_uri}"
         vars_block += "}"
