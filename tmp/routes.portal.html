@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Call Routes & Trunks</h2>
+{% if message %}<p class="ok">{{ message }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="grid">
+  <div class="card">
+    <h3>Trunk Settings</h3>
+    <form method="post" action="/routes/trunks" class="grid-form" id="trunk-form">
+      <label>Trunk ID<input name="name" placeholder="carrier_a" required /></label>
+      <label>Proxy / SIP Host/Ip address<input name="proxy" placeholder="64.34.222.236 or sip.carrier.com" required /></label>
+      <label>Trunk Direction (in/out)
+        <select name="direction" id="trunk-direction">
+          <option value="inbound">inbound</option>
+          <option value="outbound">outbound</option>
+        </select>
+      </label>
+      <div id="trunk-inbound-fields">
+        <label>In prefix<input name="in_prefix" placeholder="Enter inbound prefix digits" /></label>
+        <label>Inbound DID / Pattern<input id="inbound-did-pattern" name="did_pattern" placeholder="4163501959 or ^647\\d{7}$" /></label>
+        <label>Match Mode
+          <select name="inbound_match_mode">
+            <option value="exact">exact</option>
+            <option value="prefix">prefix</option>
+            <option value="regex">regex</option>
+          </select>
+        </label>
+      </div>
+      <div id="trunk-outbound-fields">
+        <label>Out prefix<input name="out_prefix" placeholder="Enter outbound prefix digits" /></label>
+        <label>Dialout Number / Pattern<input id="outbound-dial-pattern" name="dial_pattern" placeholder="9 or ^00\\d+$" /></label>
+        <label>Match Mode
+          <select name="outbound_match_mode">
+            <option value="prefix">prefix</option>
+            <option value="exact">exact</option>
+            <option value="regex">regex</option>
+          </select>
+        </label>
+      </div>
+      <input type="hidden" name="enabled" value="true" />
+      <button type="submit">Save Trunk</button>
+    </form>
+    <p class="hint">IP-based trunk authentication only. Inbound and outbound fields change based on selected trunk direction.</p>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Configured Trunks</h3>
+  <table>
+    <tr><th>Name</th><th>Direction</th><th>Proxy</th><th>In Prefix</th><th>Inbound DID / Pattern</th><th>In Match</th><th>Out Prefix</th><th>Dialout Number / Pattern</th><th>Out Match</th><th>Enabled</th><th>Created</th></tr>
+    {% for t in trunks %}
+    <tr>
+      <td>{{ t.name }}</td>
+      <td>{{ t.direction or "inbound" }}</td>
+      <td>{{ t.proxy }}</td>
+      <td>{{ t.in_prefix or "-" }}</td>
+      <td>{{ t.inbound_did_pattern or "-" }}</td>
+      <td>{{ t.inbound_match_mode or "-" }}</td>
+      <td>{{ t.outbound_prefix or "-" }}</td>
+      <td>{{ t.dialout_pattern or "-" }}</td>
+      <td>{{ t.outbound_match_mode or "-" }}</td>
+      <td>{{ t.enabled }}</td>
+      <td>{{ t.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<script>
+  function applyTrunkDirectionVisibility() {
+    const direction = document.getElementById("trunk-direction");
+    const inFields = document.getElementById("trunk-inbound-fields");
+    const outFields = document.getElementById("trunk-outbound-fields");
+    const inDid = document.getElementById("inbound-did-pattern");
+    const outDial = document.getElementById("outbound-dial-pattern");
+    if (!direction || !inFields || !outFields || !inDid || !outDial) {
+      return;
+    }
+    const mode = (direction.value || "").toLowerCase();
+    const showInbound = mode === "inbound";
+    const showOutbound = mode === "outbound";
+    inFields.style.display = showInbound ? "contents" : "none";
+    outFields.style.display = showOutbound ? "contents" : "none";
+    inDid.required = showInbound;
+    outDial.required = showOutbound;
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    const direction = document.getElementById("trunk-direction");
+    if (direction) {
+      direction.addEventListener("change", applyTrunkDirectionVisibility);
+    }
+    applyTrunkDirectionVisibility();
+  });
+</script>
+{% endblock %}
