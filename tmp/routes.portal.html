@@ -60,6 +60,14 @@
         <label>Destination number
           <input id="dp-destination-number" name="destination_number" placeholder="4163501959" />
         </label>
+        <label>Available Inbound Trunk
+          <select id="dp-inbound-trunk" name="inbound_trunk_name">
+            <option value="">all</option>
+            {% for t in inbound_trunks %}
+            <option value="{{ t.name }}">{{ t.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
         <label>Applications
           <select id="dp-application" name="application">
             <option value="queue">queue</option>

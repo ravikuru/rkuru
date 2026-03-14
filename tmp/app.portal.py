@@ -2168,6 +2168,7 @@ def dialplan_route_create(
     file_type: str = Form("inbound"),
     country_code: str = Form("1"),
     destination_number: str = Form(""),
+    inbound_trunk_name: str = Form(""),
     application: str = Form("queue"),
     action_value: str = Form(""),
     enabled: str = Form("true"),
@@ -2255,6 +2256,38 @@ def dialplan_route_create(
         dest_value = did_value
 
     with closing(db_conn()) as conn:
+        trunk_filter = (inbound_trunk_name or "").strip()
+        if trunk_filter:
+            trunk = conn.execute(
+                "SELECT name, direction, enabled FROM trunks WHERE name = ?",
+                (trunk_filter,),
+            ).fetchone()
+            if trunk is None:
+                payload = routes_page_payload(conn)
+                return templates.TemplateResponse(
+                    "routes.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"Inbound trunk {trunk_filter} does not exist.",
+                    },
+                )
+            trunk_direction = normalize_trunk_direction(str(trunk["direction"] or "inbound"))
+            if not bool(trunk["enabled"]) or trunk_direction not in {"inbound", "both"}:
+                payload = routes_page_payload(conn)
+                return templates.TemplateResponse(
+                    "routes.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"Inbound trunk {trunk_filter} is not enabled for inbound usage.",
+                    },
+                )
+
         if dest_type == "queue":
             item = conn.execute("SELECT number FROM queues WHERE number = ?", (dest_value,)).fetchone()
             if item is None:
@@ -2321,7 +2354,7 @@ def dialplan_route_create(
                 route_name,
                 did_value,
                 "exact",
-                "",
+                trunk_filter,
                 dest_type,
                 dest_value,
                 1 if as_bool(enabled) else 0,
@@ -2338,7 +2371,11 @@ def dialplan_route_create(
             "request": request,
             "user": user,
             **payload,
-            "message": f"Dialplan saved: inbound {did_value} -> {dest_type} {dest_value}",
+            "message": (
+                f"Dialplan saved: inbound {did_value} "
+                f"{'(all trunks)' if not trunk_filter else f'(trunk: {trunk_filter})'} "
+                f"-> {dest_type} {dest_value}"
+            ),
             "error": None,
         },
     )
