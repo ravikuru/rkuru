@@ -1211,14 +1211,11 @@ def collect_intent_with_retry(
 ) -> tuple[str, str, dict[str, str] | None]:
     prompts = [
         (PROMPT_GREETING_TEXT, PROMPT_GREETING),
-        (PROMPT_RETRY_TEXT, PROMPT_RETRY),
     ]
     for attempt_idx, (prompt_text, prompt_wav) in enumerate(prompts, start=1):
         if not uuid_exists(conn, call_uuid):
             break
         speak(conn, prompt_text, prompt_wav, cacheable=True)
-        # Short beep to indicate caller should speak now.
-        send_execute(conn, "playback", "tone_stream://%(120,0,1250)")
         wav_path = capture_intent_wav(conn, call_uuid, AI_RECORD_SECONDS)
         if not wav_path:
             log(f"intent_capture_empty uuid={call_uuid} attempt={attempt_idx}")
@@ -1241,6 +1238,11 @@ def collect_intent_with_retry(
             queue_cfg = queue_config_by_intent(intent)
             if queue_cfg:
                 return intent, transcript, queue_cfg
+    # Business fallback: if caller provides no/unclear input, route to sales.
+    sales_cfg = queue_config_by_intent("sales")
+    if sales_cfg:
+        log(f"intent_default_route uuid={call_uuid} intent=sales reason=no_input_or_unclear")
+        return "sales", "", sales_cfg
     return "invalid", "", None
 
 
