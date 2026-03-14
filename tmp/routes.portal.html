@@ -65,17 +65,16 @@
       <td>
         <button
           type="button"
-          onclick='editTrunk({{ {
-            "name": t.name,
-            "proxy": t.proxy,
-            "direction": t.direction,
-            "in_prefix": t.in_prefix,
-            "inbound_did_pattern": t.inbound_did_pattern,
-            "inbound_match_mode": t.inbound_match_mode,
-            "outbound_prefix": t.outbound_prefix,
-            "dialout_pattern": t.dialout_pattern,
-            "outbound_match_mode": t.outbound_match_mode
-          } | tojson }})'
+          class="trunk-edit-btn"
+          data-name="{{ t.name }}"
+          data-proxy="{{ t.proxy }}"
+          data-direction="{{ t.direction or 'inbound' }}"
+          data-in-prefix="{{ t.in_prefix or '' }}"
+          data-inbound-did-pattern="{{ t.inbound_did_pattern or '' }}"
+          data-inbound-match-mode="{{ t.inbound_match_mode or 'exact' }}"
+          data-out-prefix="{{ t.outbound_prefix or '' }}"
+          data-dialout-pattern="{{ t.dialout_pattern or '' }}"
+          data-outbound-match-mode="{{ t.outbound_match_mode or 'prefix' }}"
         >
           Edit
         </button>
@@ -116,6 +115,23 @@
     nameInput.focus();
   }
 
+  function editTrunkFromButton(button) {
+    if (!button) {
+      return;
+    }
+    editTrunk({
+      name: button.dataset.name || "",
+      proxy: button.dataset.proxy || "",
+      direction: button.dataset.direction || "inbound",
+      in_prefix: button.dataset.inPrefix || "",
+      inbound_did_pattern: button.dataset.inboundDidPattern || "",
+      inbound_match_mode: button.dataset.inboundMatchMode || "exact",
+      outbound_prefix: button.dataset.outPrefix || "",
+      dialout_pattern: button.dataset.dialoutPattern || "",
+      outbound_match_mode: button.dataset.outboundMatchMode || "prefix",
+    });
+  }
+
   function applyTrunkDirectionVisibility() {
     const direction = document.getElementById("trunk-direction");
     const inFields = document.getElementById("trunk-inbound-fields");
@@ -139,6 +155,11 @@
     if (direction) {
       direction.addEventListener("change", applyTrunkDirectionVisibility);
     }
+    document.querySelectorAll(".trunk-edit-btn").forEach(function (button) {
+      button.addEventListener("click", function () {
+        editTrunkFromButton(button);
+      });
+    });
     applyTrunkDirectionVisibility();
   });
 </script>
