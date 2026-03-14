@@ -32,6 +32,7 @@ FAX_STORAGE_DIR = Path("/usr/local/freeswitch/storage/fax")
 FAX_INBOUND_DIR = FAX_STORAGE_DIR / "inbound"
 FAX_OUTBOUND_DIR = FAX_STORAGE_DIR / "outbound"
 FAX_TIFF_TO_PDF_SCRIPT = "/usr/local/bin/callture_fax_tiff_to_pdf.sh"
+FAX_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tga", ".svg"}
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -1032,21 +1033,52 @@ def prepare_outbound_fax_file(file_path: str, fax_id: int) -> str:
         return str(source)
 
     errors: list[str] = []
-    gs_cmd = [
-        "sudo",
-        "gs",
-        "-q",
-        "-dNOPAUSE",
-        "-dBATCH",
-        "-sDEVICE=tiffg4",
-        "-r204x196",
-        f"-sOutputFile={out_tiff}",
-        str(source),
-    ]
-    gs_try = subprocess.run(gs_cmd, capture_output=True, text=True)
-    if gs_try.returncode == 0 and root_file_exists(out_tiff):
-        return str(out_tiff)
-    errors.append((gs_try.stderr or gs_try.stdout or "gs direct conversion failed").strip())
+    def gs_to_tiff(in_path: Path) -> tuple[bool, str]:
+        gs_cmd = [
+            "sudo",
+            "gs",
+            "-q",
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-sDEVICE=tiffg4",
+            "-r204x196",
+            f"-sOutputFile={out_tiff}",
+            str(in_path),
+        ]
+        gs_try = subprocess.run(gs_cmd, capture_output=True, text=True)
+        if gs_try.returncode == 0 and root_file_exists(out_tiff):
+            return True, ""
+        return False, (gs_try.stderr or gs_try.stdout or "gs conversion failed").strip()
+
+    # Explicitly support PDF -> TIFF conversion.
+    if suffix == ".pdf":
+        ok, err = gs_to_tiff(source)
+        if ok:
+            return str(out_tiff)
+        errors.append(err)
+
+    # Explicitly support image -> TIFF conversion.
+    elif suffix in FAX_IMAGE_EXTENSIONS:
+        ffmpeg_cmd = [
+            "sudo",
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-vf",
+            "format=gray",
+            str(out_tiff),
+        ]
+        ffmpeg_try = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+        if ffmpeg_try.returncode == 0 and root_file_exists(out_tiff):
+            return str(out_tiff)
+        errors.append((ffmpeg_try.stderr or ffmpeg_try.stdout or "ffmpeg image conversion failed").strip())
+
+    else:
+        ok, err = gs_to_tiff(source)
+        if ok:
+            return str(out_tiff)
+        errors.append(err)
 
     # Office docs and many other types can be converted via LibreOffice to PDF first.
     temp_dir = Path(f"/tmp/callture_fax_convert_{fax_id}_{stamp}")
@@ -1065,21 +1097,10 @@ def prepare_outbound_fax_file(file_path: str, fax_id: int) -> str:
     pdf_candidates = list(temp_dir.glob("*.pdf"))
     if soffice_try.returncode == 0 and pdf_candidates:
         pdf_path = pdf_candidates[0]
-        gs_pdf_cmd = [
-            "sudo",
-            "gs",
-            "-q",
-            "-dNOPAUSE",
-            "-dBATCH",
-            "-sDEVICE=tiffg4",
-            "-r204x196",
-            f"-sOutputFile={out_tiff}",
-            str(pdf_path),
-        ]
-        gs_pdf_try = subprocess.run(gs_pdf_cmd, capture_output=True, text=True)
-        if gs_pdf_try.returncode == 0 and root_file_exists(out_tiff):
+        ok, err = gs_to_tiff(pdf_path)
+        if ok:
             return str(out_tiff)
-        errors.append((gs_pdf_try.stderr or gs_pdf_try.stdout or "gs PDF conversion failed").strip())
+        errors.append(err or "gs PDF conversion failed")
     else:
         errors.append((soffice_try.stderr or soffice_try.stdout or "soffice conversion failed").strip())
 
