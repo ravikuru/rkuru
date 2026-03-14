@@ -433,7 +433,17 @@ def init_db() -> None:
                 moderator_pin TEXT,
                 max_members INTEGER NOT NULL DEFAULT 50,
                 record INTEGER NOT NULL DEFAULT 0,
-                enabled INTEGER NOT NULL DEFAULT 1
+                enabled INTEGER NOT NULL DEFAULT 1,
+                profile_mode TEXT NOT NULL DEFAULT 'open',
+                dtmf_profile TEXT NOT NULL DEFAULT 'default',
+                muted_on_entry INTEGER NOT NULL DEFAULT 0,
+                entry_tone TEXT NOT NULL DEFAULT '',
+                exit_tone TEXT NOT NULL DEFAULT '',
+                sample_rate INTEGER NOT NULL DEFAULT 48000,
+                energy_level INTEGER NOT NULL DEFAULT 20,
+                auto_outcall_numbers TEXT NOT NULL DEFAULT '',
+                auto_outcall_trunk TEXT NOT NULL DEFAULT '',
+                video_layout TEXT NOT NULL DEFAULT 'speaker'
             );
 
             CREATE TABLE IF NOT EXISTS vpbx_extensions (
@@ -589,6 +599,27 @@ def init_db() -> None:
             conn.execute("ALTER TABLE fax_routes ADD COLUMN last_result TEXT NOT NULL DEFAULT ''")
         if "last_attempt_at" not in fax_cols:
             conn.execute("ALTER TABLE fax_routes ADD COLUMN last_attempt_at TEXT NOT NULL DEFAULT ''")
+        conference_cols = {row["name"] for row in conn.execute("PRAGMA table_info(conferences)").fetchall()}
+        if "profile_mode" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN profile_mode TEXT NOT NULL DEFAULT 'open'")
+        if "dtmf_profile" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN dtmf_profile TEXT NOT NULL DEFAULT 'default'")
+        if "muted_on_entry" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN muted_on_entry INTEGER NOT NULL DEFAULT 0")
+        if "entry_tone" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN entry_tone TEXT NOT NULL DEFAULT ''")
+        if "exit_tone" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN exit_tone TEXT NOT NULL DEFAULT ''")
+        if "sample_rate" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN sample_rate INTEGER NOT NULL DEFAULT 48000")
+        if "energy_level" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN energy_level INTEGER NOT NULL DEFAULT 20")
+        if "auto_outcall_numbers" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN auto_outcall_numbers TEXT NOT NULL DEFAULT ''")
+        if "auto_outcall_trunk" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN auto_outcall_trunk TEXT NOT NULL DEFAULT ''")
+        if "video_layout" not in conference_cols:
+            conn.execute("ALTER TABLE conferences ADD COLUMN video_layout TEXT NOT NULL DEFAULT 'speaker'")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_created_at ON security_events(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip_address)")
@@ -873,6 +904,67 @@ def outbound_match_expression_and_target(pattern: str, match_mode: str) -> tuple
 
 def as_bool(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def sanitize_conference_pin(value: str) -> str:
+    pin = re.sub(r"\D+", "", (value or "").strip())
+    if len(pin) < 2 or len(pin) > 12:
+        return ""
+    return pin
+
+
+def sanitize_conference_mode(value: str) -> str:
+    mode = (value or "").strip().lower()
+    if mode in {"restricted", "webinar", "madboss"}:
+        return mode
+    return "open"
+
+
+def sanitize_conference_sample_rate(value: int | str | None) -> int:
+    try:
+        rate = int(value or 48000)
+    except (TypeError, ValueError):
+        rate = 48000
+    if rate in {8000, 16000, 32000, 48000}:
+        return rate
+    return 48000
+
+
+def sanitize_conference_energy_level(value: int | str | None) -> int:
+    try:
+        level = int(value or 20)
+    except (TypeError, ValueError):
+        level = 20
+    return max(0, min(level, 180))
+
+
+def parse_outcall_numbers(raw_csv: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in (raw_csv or "").replace(";", ",").split(","):
+        normalized = re.sub(r"\s+", "", token or "")
+        normalized = re.sub(r"[^0-9+*#]", "", normalized)
+        if not normalized or not re.search(r"\d", normalized):
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(normalized)
+    return out
+
+
+def build_conference_app_data(room: str, pin: str | None, flags: list[str] | None = None) -> str:
+    clean_flags = [flag.strip() for flag in (flags or []) if flag.strip()]
+    room_profile = f"{room}@default"
+    safe_pin = sanitize_conference_pin(pin or "")
+    if safe_pin and clean_flags:
+        return f"{room_profile}+{safe_pin}+flags{{{','.join(clean_flags)}}}"
+    if safe_pin:
+        return f"{room_profile}+{safe_pin}"
+    if clean_flags:
+        return f"{room_profile}++flags{{{','.join(clean_flags)}}}"
+    return room_profile
 
 
 def require_user(request: Request) -> str | None:
@@ -1269,6 +1361,25 @@ def fax_page_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def conference_page_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+    rooms = conn.execute("SELECT * FROM conferences ORDER BY room_number").fetchall()
+    outbound_trunks = conn.execute(
+        """
+        SELECT name, proxy, outbound_prefix
+        FROM trunks
+        WHERE enabled = 1
+          AND LOWER(COALESCE(direction, 'both')) IN ('outbound', 'both')
+        ORDER BY name
+        """
+    ).fetchall()
+    live_summary = fs_cli("conference list")
+    return {
+        "rooms": rooms,
+        "outbound_trunks": outbound_trunks,
+        "live_summary": live_summary,
+    }
+
+
 def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password: str, context: str) -> None:
     xml = textwrap.dedent(
         f"""\
@@ -1332,7 +1443,9 @@ def sync_conference_dialplan() -> None:
     with closing(db_conn()) as conn:
         rows = conn.execute(
             """
-            SELECT room_number, record
+            SELECT
+                room_number, pin, moderator_pin, max_members, record, profile_mode,
+                dtmf_profile, muted_on_entry, entry_tone, exit_tone, sample_rate, energy_level
             FROM conferences
             WHERE enabled = 1
             ORDER BY room_number
@@ -1341,7 +1454,26 @@ def sync_conference_dialplan() -> None:
 
     blocks: list[str] = []
     for row in rows:
-        room = row["room_number"]
+        room = (row["room_number"] or "").strip()
+        if not room:
+            continue
+        room_expr = re.escape(room)
+        mode = sanitize_conference_mode(str(row["profile_mode"] or "open"))
+        muted_default = bool(row["muted_on_entry"]) or mode in {"webinar", "madboss"}
+        member_flags: list[str] = []
+        if muted_default:
+            member_flags.append("mute")
+        if mode == "madboss":
+            member_flags.append("mintwo")
+        conference_data = build_conference_app_data(room, str(row["pin"] or ""), member_flags)
+        max_members = max(2, min(int(row["max_members"] or 50), 1000))
+        sample_rate = sanitize_conference_sample_rate(row["sample_rate"] or 48000)
+        energy_level = sanitize_conference_energy_level(row["energy_level"] or 20)
+        dtmf_profile = (row["dtmf_profile"] or "default").strip() or "default"
+        entry_tone = (row["entry_tone"] or "").strip()
+        exit_tone = (row["exit_tone"] or "").strip()
+        pin = sanitize_conference_pin(str(row["pin"] or ""))
+        moderator_pin = sanitize_conference_pin(str(row["moderator_pin"] or ""))
         rec_action = ""
         if int(row["record"]) == 1:
             rec_action = (
@@ -1350,14 +1482,28 @@ def sync_conference_dialplan() -> None:
                 + room
                 + '.wav"/>'
             )
+        pin_actions = ""
+        if pin:
+            pin_actions += f'<action application="set" data="conference_pin={pin}"/>'
+        if moderator_pin:
+            pin_actions += f'<action application="set" data="conference_moderator_pin={moderator_pin}"/>'
+        entry_action = f'<action application="playback" data="{entry_tone}"/>' if entry_tone else ""
+        exit_action = f'<action application="playback" data="{exit_tone}"/>' if exit_tone else ""
         blocks.append(
             textwrap.dedent(
                 f"""\
                   <extension name="conference_{room}">
-                    <condition field="destination_number" expression="^{room}$">
+                    <condition field="destination_number" expression="^{room_expr}$">
                       <action application="answer"/>
+                      <action application="set" data="conference_max_members={max_members}"/>
+                      <action application="set" data="conference_rate={sample_rate}"/>
+                      <action application="set" data="conference_energy_level={energy_level}"/>
+                      <action application="set" data="conference_controls={dtmf_profile}"/>
+                      {pin_actions}
+                      {entry_action}
                       {rec_action}
-                      <action application="conference" data="{room}@default"/>
+                      <action application="conference" data="{conference_data}"/>
+                      {exit_action}
                     </condition>
                   </extension>
                 """
@@ -3700,10 +3846,18 @@ def conference_page(request: Request):
     if denied:
         return denied
     with closing(db_conn()) as conn:
-        rooms = conn.execute("SELECT * FROM conferences ORDER BY room_number").fetchall()
+        payload = conference_page_payload(conn)
     return templates.TemplateResponse(
         "conference.html",
-        {"request": request, "user": user, "rooms": rooms, "message": None},
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": None,
+            "error": None,
+            "send_result": "",
+            "control_result": "",
+        },
     )
 
 
@@ -3716,31 +3870,348 @@ def conference_create(
     moderator_pin: str = Form(""),
     max_members: int = Form(50),
     record: str = Form("false"),
+    enabled: str = Form("true"),
+    profile_mode: str = Form("open"),
+    dtmf_profile: str = Form("default"),
+    muted_on_entry: str = Form("false"),
+    entry_tone: str = Form(""),
+    exit_tone: str = Form(""),
+    sample_rate: int = Form(48000),
+    energy_level: int = Form(20),
+    auto_outcall_numbers: str = Form(""),
+    auto_outcall_trunk: str = Form(""),
+    video_layout: str = Form("speaker"),
 ):
     user, denied = require_admin_or_redirect(request)
     if denied:
         return denied
+    room = (room_number or "").strip()
+    name = (display_name or "").strip()
+    if not room or not name:
+        with closing(db_conn()) as conn:
+            payload = conference_page_payload(conn)
+        return templates.TemplateResponse(
+            "conference.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Room Number and Display Name are required.",
+                "send_result": "",
+                "control_result": "",
+            },
+        )
+    pin_value = sanitize_conference_pin(pin)
+    mod_pin_value = sanitize_conference_pin(moderator_pin)
+    profile_value = sanitize_conference_mode(profile_mode)
+    dtmf_value = re.sub(r"[^0-9A-Za-z_.-]", "", (dtmf_profile or "default").strip()) or "default"
+    entry_tone_value = (entry_tone or "").strip()
+    exit_tone_value = (exit_tone or "").strip()
+    sample_rate_value = sanitize_conference_sample_rate(sample_rate)
+    energy_value = sanitize_conference_energy_level(energy_level)
+    room_auto_numbers = ",".join(parse_outcall_numbers(auto_outcall_numbers))
+    room_auto_trunk = (auto_outcall_trunk or "").strip()
+    video_layout_value = (video_layout or "speaker").strip() or "speaker"
+    max_members_value = max(2, min(int(max_members or 50), 1000))
+    enabled_value = 1 if as_bool(enabled) else 0
+    record_value = 1 if as_bool(record) else 0
+    muted_value = 1 if as_bool(muted_on_entry) else 0
     with closing(db_conn()) as conn:
+        if room_auto_trunk:
+            trunk = conn.execute(
+                """
+                SELECT name
+                FROM trunks
+                WHERE name = ?
+                  AND enabled = 1
+                  AND LOWER(COALESCE(direction, 'both')) IN ('outbound', 'both')
+                """,
+                (room_auto_trunk,),
+            ).fetchone()
+            if trunk is None:
+                payload = conference_page_payload(conn)
+                return templates.TemplateResponse(
+                    "conference.html",
+                    {
+                        "request": request,
+                        "user": user,
+                        **payload,
+                        "message": None,
+                        "error": f"Auto outcall trunk '{room_auto_trunk}' is not available for outbound.",
+                        "send_result": "",
+                        "control_result": "",
+                    },
+                )
         conn.execute(
             """
-            INSERT OR REPLACE INTO conferences(room_number, display_name, pin, moderator_pin, max_members, record, enabled)
-            VALUES(?,?,?,?,?,?,1)
+            INSERT OR REPLACE INTO conferences(
+                room_number, display_name, pin, moderator_pin, max_members, record, enabled,
+                profile_mode, dtmf_profile, muted_on_entry, entry_tone, exit_tone, sample_rate,
+                energy_level, auto_outcall_numbers, auto_outcall_trunk, video_layout
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                room_number.strip(),
-                display_name.strip(),
-                pin.strip() or None,
-                moderator_pin.strip() or None,
-                max_members,
-                1 if record.lower() == "true" else 0,
+                room,
+                name,
+                pin_value or None,
+                mod_pin_value or None,
+                max_members_value,
+                record_value,
+                enabled_value,
+                profile_value,
+                dtmf_value,
+                muted_value,
+                entry_tone_value,
+                exit_tone_value,
+                sample_rate_value,
+                energy_value,
+                room_auto_numbers,
+                room_auto_trunk,
+                video_layout_value,
             ),
         )
         conn.commit()
-        rooms = conn.execute("SELECT * FROM conferences ORDER BY room_number").fetchall()
+        payload = conference_page_payload(conn)
     sync_conference_dialplan()
     return templates.TemplateResponse(
         "conference.html",
-        {"request": request, "user": user, "rooms": rooms, "message": f"Conference room {room_number} saved."},
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": f"Conference room {room} saved.",
+            "error": None,
+            "send_result": "",
+            "control_result": "",
+        },
+    )
+
+
+@app.post("/conference/delete", response_class=HTMLResponse)
+def conference_delete(request: Request, room_number: str = Form(...)):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    room = (room_number or "").strip()
+    with closing(db_conn()) as conn:
+        conn.execute("DELETE FROM conferences WHERE room_number = ?", (room,))
+        conn.commit()
+        payload = conference_page_payload(conn)
+    sync_conference_dialplan()
+    return templates.TemplateResponse(
+        "conference.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": f"Conference room {room} removed.",
+            "error": None,
+            "send_result": "",
+            "control_result": "",
+        },
+    )
+
+
+@app.post("/conference/control", response_class=HTMLResponse)
+def conference_control(
+    request: Request,
+    room_number: str = Form(...),
+    action: str = Form(...),
+    member_id: str = Form(""),
+    level: str = Form(""),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    room = (room_number or "").strip()
+    member = re.sub(r"\D+", "", (member_id or "").strip())
+    action_key = (action or "").strip().lower()
+    conf_name = f"{room}@default"
+    command = ""
+    if action_key in {"list", "lock", "unlock"}:
+        command = f"conference {conf_name} {action_key}"
+    elif action_key in {"mute", "unmute", "deaf", "undeaf", "kick"}:
+        if not member:
+            with closing(db_conn()) as conn:
+                payload = conference_page_payload(conn)
+            return templates.TemplateResponse(
+                "conference.html",
+                {
+                    "request": request,
+                    "user": user,
+                    **payload,
+                    "message": None,
+                    "error": "Member ID is required for this action.",
+                    "send_result": "",
+                    "control_result": "",
+                },
+            )
+        command = f"conference {conf_name} {action_key} {member}"
+    elif action_key in {"volume_in", "volume_out", "energy"}:
+        if not member:
+            with closing(db_conn()) as conn:
+                payload = conference_page_payload(conn)
+            return templates.TemplateResponse(
+                "conference.html",
+                {
+                    "request": request,
+                    "user": user,
+                    **payload,
+                    "message": None,
+                    "error": "Member ID is required for volume/energy actions.",
+                    "send_result": "",
+                    "control_result": "",
+                },
+            )
+        try:
+            level_int = int((level or "").strip())
+        except ValueError:
+            level_int = 1
+        if action_key in {"volume_in", "volume_out"}:
+            level_int = max(-10, min(level_int, 10))
+        else:
+            level_int = max(0, min(level_int, 180))
+        command = f"conference {conf_name} {action_key} {member} {level_int}"
+    else:
+        with closing(db_conn()) as conn:
+            payload = conference_page_payload(conn)
+        return templates.TemplateResponse(
+            "conference.html",
+            {
+                "request": request,
+                "user": user,
+                **payload,
+                "message": None,
+                "error": "Unsupported conference control action.",
+                "send_result": "",
+                "control_result": "",
+            },
+        )
+    control_result = fs_cli(command)
+    with closing(db_conn()) as conn:
+        payload = conference_page_payload(conn)
+    return templates.TemplateResponse(
+        "conference.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": "Conference control command executed.",
+            "error": None,
+            "send_result": "",
+            "control_result": control_result,
+        },
+    )
+
+
+@app.post("/conference/outcall", response_class=HTMLResponse)
+def conference_outcall(
+    request: Request,
+    room_number: str = Form(...),
+    trunk_name: str = Form(""),
+    numbers_csv: str = Form(""),
+    role: str = Form("member"),
+    muted: str = Form("false"),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    room = (room_number or "").strip()
+    selected_role = (role or "member").strip().lower()
+    muted_join = as_bool(muted)
+    with closing(db_conn()) as conn:
+        room_row = conn.execute(
+            "SELECT * FROM conferences WHERE room_number = ? AND enabled = 1",
+            (room,),
+        ).fetchone()
+        if room_row is None:
+            payload = conference_page_payload(conn)
+            return templates.TemplateResponse(
+                "conference.html",
+                {
+                    "request": request,
+                    "user": user,
+                    **payload,
+                    "message": None,
+                    "error": f"Conference room {room} is not found or disabled.",
+                    "send_result": "",
+                    "control_result": "",
+                },
+            )
+        effective_trunk = (trunk_name or "").strip() or (room_row["auto_outcall_trunk"] or "").strip()
+        trunk_row = conn.execute(
+            """
+            SELECT *
+            FROM trunks
+            WHERE name = ?
+              AND enabled = 1
+              AND LOWER(COALESCE(direction, 'both')) IN ('outbound', 'both')
+            """,
+            (effective_trunk,),
+        ).fetchone()
+        if trunk_row is None:
+            payload = conference_page_payload(conn)
+            return templates.TemplateResponse(
+                "conference.html",
+                {
+                    "request": request,
+                    "user": user,
+                    **payload,
+                    "message": None,
+                    "error": f"Outbound trunk '{effective_trunk}' is not available.",
+                    "send_result": "",
+                    "control_result": "",
+                },
+            )
+        requested_numbers = numbers_csv or str(room_row["auto_outcall_numbers"] or "")
+        numbers = parse_outcall_numbers(requested_numbers)
+        if not numbers:
+            payload = conference_page_payload(conn)
+            return templates.TemplateResponse(
+                "conference.html",
+                {
+                    "request": request,
+                    "user": user,
+                    **payload,
+                    "message": None,
+                    "error": "Provide at least one outcall number.",
+                    "send_result": "",
+                    "control_result": "",
+                },
+            )
+        flags: list[str] = []
+        if selected_role == "moderator":
+            flags.append("moderator")
+        if muted_join:
+            flags.append("mute")
+        app_data = build_conference_app_data(room, str(room_row["pin"] or ""), flags)
+        originate_results: list[str] = []
+        for number in numbers:
+            target = apply_outbound_trunk_prefix(number, str(trunk_row["outbound_prefix"] or ""))
+            cmd = (
+                "bgapi originate "
+                "{ignore_early_media=true,"
+                f"origination_caller_id_number={FAX_FIXED_FROM_NUMBER},"
+                "origination_caller_id_name='Conference Invite'}"
+                f"sofia/gateway/{effective_trunk}/{target} "
+                f"&conference({app_data})"
+            )
+            result = fs_cli(cmd)
+            originate_results.append(f"{number} -> {target}: {result}")
+        payload = conference_page_payload(conn)
+    return templates.TemplateResponse(
+        "conference.html",
+        {
+            "request": request,
+            "user": user,
+            **payload,
+            "message": f"Conference outcall command sent to {len(numbers)} participant(s).",
+            "error": None,
+            "send_result": "\n".join(originate_results),
+            "control_result": "",
+        },
     )
 
 

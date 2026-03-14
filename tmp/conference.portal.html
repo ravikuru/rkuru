@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Conference</h2>
+{% if message %}<p class="ok">{{ message }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="card">
+  <h3>Create / Update Conference Room</h3>
+  <form method="post" action="/conference" class="grid-form" id="conf-form">
+    <label>Room Number
+      <input id="conf-room-number" name="room_number" placeholder="7000" required />
+    </label>
+    <label>Display Name
+      <input id="conf-display-name" name="display_name" placeholder="Sales War Room" required />
+    </label>
+    <label>Profile Mode
+      <select id="conf-profile-mode" name="profile_mode">
+        <option value="open">open</option>
+        <option value="restricted">restricted</option>
+        <option value="webinar">webinar (muted by default)</option>
+        <option value="madboss">madboss (coach/listen style)</option>
+      </select>
+    </label>
+    <label>Participant PIN (optional)
+      <input id="conf-pin" name="pin" placeholder="1234" />
+    </label>
+    <label>Moderator PIN (optional)
+      <input id="conf-moderator-pin" name="moderator_pin" placeholder="9999" />
+    </label>
+    <label>Max Members
+      <input id="conf-max-members" type="number" name="max_members" min="2" max="1000" value="50" />
+    </label>
+    <label>Audio Sample Rate
+      <select id="conf-sample-rate" name="sample_rate">
+        <option value="8000">8000 Hz</option>
+        <option value="16000">16000 Hz</option>
+        <option value="32000">32000 Hz</option>
+        <option value="48000" selected>48000 Hz (HD)</option>
+      </select>
+    </label>
+    <label>Energy Level
+      <input id="conf-energy-level" type="number" name="energy_level" min="0" max="180" value="20" />
+    </label>
+    <label>DTMF Controls Profile
+      <input id="conf-dtmf-profile" name="dtmf_profile" value="default" />
+    </label>
+    <label>Muted On Entry
+      <select id="conf-muted-on-entry" name="muted_on_entry">
+        <option value="false">false</option>
+        <option value="true">true</option>
+      </select>
+    </label>
+    <label>Auto Recording
+      <select id="conf-record" name="record">
+        <option value="false">false</option>
+        <option value="true">true</option>
+      </select>
+    </label>
+    <label>Entry Tone / Prompt (optional file path)
+      <input id="conf-entry-tone" name="entry_tone" placeholder="/usr/local/freeswitch/sounds/en/us/callie/ivr/ivr-welcome.wav" />
+    </label>
+    <label>Exit Tone / Prompt (optional file path)
+      <input id="conf-exit-tone" name="exit_tone" placeholder="/usr/local/freeswitch/sounds/en/us/callie/ivr/ivr-thank_you.wav" />
+    </label>
+    <label>Video Layout
+      <select id="conf-video-layout" name="video_layout">
+        <option value="speaker">active speaker</option>
+        <option value="grid">grid</option>
+        <option value="overlay">overlay</option>
+      </select>
+    </label>
+    <label>Auto Outcall Numbers (CSV)
+      <input id="conf-auto-outcall-numbers" name="auto_outcall_numbers" placeholder="14165550000,14165550001" />
+    </label>
+    <label>Auto Outcall Trunk
+      <select id="conf-auto-outcall-trunk" name="auto_outcall_trunk">
+        <option value="">select trunk</option>
+        {% for t in outbound_trunks %}
+        <option value="{{ t.name }}">{{ t.name }}{% if t.outbound_prefix %} (prefix {{ t.outbound_prefix }}){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Enabled
+      <select id="conf-enabled" name="enabled">
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    </label>
+    <button id="conf-save-btn" type="submit">Save Conference Room</button>
+    <button id="conf-cancel-btn" type="button" style="display:none">Cancel Edit</button>
+  </form>
+  <p class="hint">Moderator controls are available in Live Moderator Control below (mute/unmute/volume/kick/list). DTMF profile follows FreeSWITCH mod_conference caller-controls profile.</p>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h3>Conference Outcall (Dial Participants)</h3>
+    <form method="post" action="/conference/outcall" class="grid-form">
+      <label>Room
+        <select name="room_number" required>
+          {% for r in rooms %}
+          <option value="{{ r.room_number }}">{{ r.room_number }} - {{ r.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Trunk
+        <select name="trunk_name">
+          <option value="">use room auto trunk</option>
+          {% for t in outbound_trunks %}
+          <option value="{{ t.name }}">{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Numbers CSV
+        <input name="numbers_csv" placeholder="14165550101,14165550102" />
+      </label>
+      <label>Role on Join
+        <select name="role">
+          <option value="member">member</option>
+          <option value="moderator">moderator</option>
+        </select>
+      </label>
+      <label>Muted On Join
+        <select name="muted">
+          <option value="false">false</option>
+          <option value="true">true</option>
+        </select>
+      </label>
+      <button type="submit">Start Outcall</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Live Moderator Control</h3>
+    <form method="post" action="/conference/control" class="grid-form">
+      <label>Room
+        <select name="room_number" required>
+          {% for r in rooms %}
+          <option value="{{ r.room_number }}">{{ r.room_number }} - {{ r.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Action
+        <select name="action">
+          <option value="list">list members</option>
+          <option value="mute">mute member</option>
+          <option value="unmute">unmute member</option>
+          <option value="deaf">deaf member</option>
+          <option value="undeaf">undeaf member</option>
+          <option value="kick">kick member</option>
+          <option value="volume_in">volume in</option>
+          <option value="volume_out">volume out</option>
+          <option value="energy">energy</option>
+          <option value="lock">lock room</option>
+          <option value="unlock">unlock room</option>
+        </select>
+      </label>
+      <label>Member ID (if required)
+        <input name="member_id" placeholder="1" />
+      </label>
+      <label>Level (volume/energy only)
+        <input name="level" type="number" placeholder="1" />
+      </label>
+      <button type="submit">Run Control Command</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Configured Rooms</h3>
+  <table>
+    <tr>
+      <th>Room</th>
+      <th>Name</th>
+      <th>Profile</th>
+      <th>PIN</th>
+      <th>Moderator PIN</th>
+      <th>Max</th>
+      <th>Rate</th>
+      <th>Muted Entry</th>
+      <th>Record</th>
+      <th>Auto Outcall</th>
+      <th>Enabled</th>
+      <th>Actions</th>
+    </tr>
+    {% for r in rooms %}
+    <tr>
+      <td>{{ r.room_number }}</td>
+      <td>{{ r.display_name }}</td>
+      <td>{{ r.profile_mode or "open" }}</td>
+      <td>{{ r.pin or "-" }}</td>
+      <td>{{ r.moderator_pin or "-" }}</td>
+      <td>{{ r.max_members }}</td>
+      <td>{{ r.sample_rate or 48000 }}</td>
+      <td>{{ "true" if r.muted_on_entry else "false" }}</td>
+      <td>{{ "true" if r.record else "false" }}</td>
+      <td>{{ r.auto_outcall_numbers or "-" }}</td>
+      <td>{{ "true" if r.enabled else "false" }}</td>
+      <td>
+        <button
+          type="button"
+          class="conf-edit-btn"
+          data-room-number="{{ r.room_number }}"
+          data-display-name="{{ r.display_name }}"
+          data-profile-mode="{{ r.profile_mode or 'open' }}"
+          data-pin="{{ r.pin or '' }}"
+          data-moderator-pin="{{ r.moderator_pin or '' }}"
+          data-max-members="{{ r.max_members or 50 }}"
+          data-sample-rate="{{ r.sample_rate or 48000 }}"
+          data-energy-level="{{ r.energy_level or 20 }}"
+          data-dtmf-profile="{{ r.dtmf_profile or 'default' }}"
+          data-muted-on-entry="{{ 'true' if r.muted_on_entry else 'false' }}"
+          data-record="{{ 'true' if r.record else 'false' }}"
+          data-entry-tone="{{ r.entry_tone or '' }}"
+          data-exit-tone="{{ r.exit_tone or '' }}"
+          data-video-layout="{{ r.video_layout or 'speaker' }}"
+          data-auto-outcall-numbers="{{ r.auto_outcall_numbers or '' }}"
+          data-auto-outcall-trunk="{{ r.auto_outcall_trunk or '' }}"
+          data-enabled="{{ 'true' if r.enabled else 'false' }}"
+        >
+          Edit
+        </button>
+        <form method="post" action="/conference/delete" style="display:inline" onsubmit="return confirm('Delete room {{ r.room_number }}?');">
+          <input type="hidden" name="room_number" value="{{ r.room_number }}" />
+          <button type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Live Conference Status</h3>
+  <pre>{{ live_summary or "No active conference output." }}</pre>
+</div>
+
+{% if send_result %}
+<div class="card">
+  <h3>Outcall Command Result</h3>
+  <pre>{{ send_result }}</pre>
+</div>
+{% endif %}
+
+{% if control_result %}
+<div class="card">
+  <h3>Control Command Result</h3>
+  <pre>{{ control_result }}</pre>
+</div>
+{% endif %}
+
+<script>
+  function resetConferenceForm() {
+    const form = document.getElementById("conf-form");
+    const saveBtn = document.getElementById("conf-save-btn");
+    const cancelBtn = document.getElementById("conf-cancel-btn");
+    if (form) form.reset();
+    const sampleRate = document.getElementById("conf-sample-rate");
+    const maxMembers = document.getElementById("conf-max-members");
+    const energy = document.getElementById("conf-energy-level");
+    const profile = document.getElementById("conf-profile-mode");
+    const dtmf = document.getElementById("conf-dtmf-profile");
+    const video = document.getElementById("conf-video-layout");
+    const record = document.getElementById("conf-record");
+    const muted = document.getElementById("conf-muted-on-entry");
+    const enabled = document.getElementById("conf-enabled");
+    if (sampleRate) sampleRate.value = "48000";
+    if (maxMembers) maxMembers.value = "50";
+    if (energy) energy.value = "20";
+    if (profile) profile.value = "open";
+    if (dtmf) dtmf.value = "default";
+    if (video) video.value = "speaker";
+    if (record) record.value = "false";
+    if (muted) muted.value = "false";
+    if (enabled) enabled.value = "true";
+    if (saveBtn) saveBtn.textContent = "Save Conference Room";
+    if (cancelBtn) cancelBtn.style.display = "none";
+  }
+
+  function editConferenceRoom(btn) {
+    const idMap = {
+      roomNumber: "conf-room-number",
+      displayName: "conf-display-name",
+      profileMode: "conf-profile-mode",
+      pin: "conf-pin",
+      moderatorPin: "conf-moderator-pin",
+      maxMembers: "conf-max-members",
+      sampleRate: "conf-sample-rate",
+      energyLevel: "conf-energy-level",
+      dtmfProfile: "conf-dtmf-profile",
+      mutedOnEntry: "conf-muted-on-entry",
+      record: "conf-record",
+      entryTone: "conf-entry-tone",
+      exitTone: "conf-exit-tone",
+      videoLayout: "conf-video-layout",
+      autoOutcallNumbers: "conf-auto-outcall-numbers",
+      autoOutcallTrunk: "conf-auto-outcall-trunk",
+      enabled: "conf-enabled",
+    };
+    Object.keys(idMap).forEach(function (key) {
+      const el = document.getElementById(idMap[key]);
+      if (!el) return;
+      const value = btn.dataset[key] || "";
+      if (value) {
+        el.value = value;
+      } else if (el.tagName === "SELECT") {
+        const first = el.options.length > 0 ? el.options[0].value : "";
+        el.value = first;
+      } else {
+        el.value = "";
+      }
+    });
+    const saveBtn = document.getElementById("conf-save-btn");
+    const cancelBtn = document.getElementById("conf-cancel-btn");
+    if (saveBtn) saveBtn.textContent = "Update Conference Room";
+    if (cancelBtn) cancelBtn.style.display = "inline-block";
+    const room = document.getElementById("conf-room-number");
+    if (room) {
+      room.scrollIntoView({ behavior: "smooth", block: "center" });
+      room.focus();
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    document.querySelectorAll(".conf-edit-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        editConferenceRoom(btn);
+      });
+    });
+    const cancelBtn = document.getElementById("conf-cancel-btn");
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", resetConferenceForm);
+    }
+  });
+</script>
+{% endblock %}
