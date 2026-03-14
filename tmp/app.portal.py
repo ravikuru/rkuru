@@ -1154,14 +1154,17 @@ def save_uploaded_fax_file(file_upload: UploadFile) -> str:
 
 def sanitize_outbound_prefix_for_dialing(prefix: str) -> str:
     raw = re.sub(r"\s+", "", (prefix or "").strip())
-    # '#' is not safe in SIP URI user part for Request-URI dialing.
-    return raw.replace("#", "")
+    # Keep trunk-entered '#' semantics while making it SIP-URI safe.
+    return raw.replace("#", "%23")
 
 
 def apply_outbound_trunk_prefix(number: str, prefix: str) -> str:
     destination = (number or "").strip()
+    raw_prefix = re.sub(r"\s+", "", (prefix or "").strip())
     trunk_prefix = sanitize_outbound_prefix_for_dialing(prefix)
     if not trunk_prefix:
+        return destination
+    if raw_prefix and destination.startswith(raw_prefix):
         return destination
     return destination if destination.startswith(trunk_prefix) else f"{trunk_prefix}{destination}"
 
