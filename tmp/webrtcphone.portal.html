@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>WebRTCPhone</h2>
+
+<div class="card">
+  <h3>Browser Softphone (SIP over WebSocket)</h3>
+  <form class="grid-form" onsubmit="return false;">
+    <label>Extension
+      <input id="webrtc-extension" placeholder="6472585272" />
+    </label>
+    <label>Password
+      <input id="webrtc-password" type="password" placeholder="SIP password" />
+    </label>
+    <label>Realm / Domain
+      <input id="webrtc-realm" value="{{ webrtc_realm }}" />
+    </label>
+    <label>Transport
+      <select id="webrtc-transport">
+        <option value="wss">wss (recommended)</option>
+        <option value="ws">ws</option>
+      </select>
+    </label>
+    <label>WSS URL
+      <input id="webrtc-wss-url" value="{{ webrtc_wss_url }}" />
+    </label>
+    <label>WS URL
+      <input id="webrtc-ws-url" value="{{ webrtc_ws_url }}" />
+    </label>
+    <label>Destination (number or SIP URI)
+      <input id="webrtc-target" placeholder="1000 or sip:1000@{{ webrtc_realm }}" />
+    </label>
+    <div style="display:flex; gap:8px; align-items:end;">
+      <button id="webrtc-register-btn" type="button">Register</button>
+      <button id="webrtc-unregister-btn" type="button">Unregister</button>
+      <button id="webrtc-call-btn" type="button">Call</button>
+      <button id="webrtc-hangup-btn" type="button">Hangup</button>
+    </div>
+  </form>
+  <p class="hint">WebRTC is active on this server. If browser blocks WSS, trust/install a valid TLS cert for this host.</p>
+</div>
+
+<div class="card">
+  <h3>Available Extensions</h3>
+  <table>
+    <tr><th>Extension</th><th>Display Name</th><th>Action</th></tr>
+    {% for e in webrtc_extensions %}
+    <tr>
+      <td>{{ e.extension }}</td>
+      <td>{{ e.display_name }}</td>
+      <td><button type="button" onclick="useExtension({{ e.extension|tojson }})">Use</button></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3">No extensions configured.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Call Audio</h3>
+  <audio id="remote-audio" autoplay controls></audio>
+</div>
+
+<div class="card">
+  <h3>WebRTC Log</h3>
+  <pre id="webrtc-log">Ready.</pre>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sip.js@0.21.2/lib/index.min.js"></script>
+<script>
+  let userAgent = null;
+  let registerer = null;
+  let activeSession = null;
+
+  function logWebRTC(msg) {
+    const box = document.getElementById("webrtc-log");
+    const stamp = new Date().toISOString();
+    box.textContent = `${box.textContent}\n[${stamp}] ${msg}`;
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function val(id) {
+    const el = document.getElementById(id);
+    return el ? (el.value || "").trim() : "";
+  }
+
+  function useExtension(ext) {
+    const input = document.getElementById("webrtc-extension");
+    if (input) input.value = ext || "";
+    input && input.focus();
+  }
+
+  function buildTargetUri(rawTarget, realm) {
+    if (!rawTarget) return null;
+    if (rawTarget.toLowerCase().startsWith("sip:")) {
+      return SIP.UserAgent.makeURI(rawTarget);
+    }
+    return SIP.UserAgent.makeURI(`sip:${rawTarget}@${realm}`);
+  }
+
+  function attachRemoteAudio(session) {
+    const remoteAudio = document.getElementById("remote-audio");
+    if (!remoteAudio || !session || !session.sessionDescriptionHandler) {
+      return;
+    }
+    const pc = session.sessionDescriptionHandler.peerConnection;
+    if (!pc) return;
+    const remoteStream = new MediaStream();
+    pc.getReceivers().forEach((receiver) => {
+      if (receiver.track) remoteStream.addTrack(receiver.track);
+    });
+    remoteAudio.srcObject = remoteStream;
+  }
+
+  async function registerWebRTC() {
+    try {
+      if (!window.SIP) {
+        logWebRTC("SIP.js failed to load.");
+        return;
+      }
+      const extension = val("webrtc-extension");
+      const password = val("webrtc-password");
+      const realm = val("webrtc-realm");
+      const transport = val("webrtc-transport");
+      const server = transport === "ws" ? val("webrtc-ws-url") : val("webrtc-wss-url");
+      if (!extension || !password || !realm || !server) {
+        logWebRTC("Extension, password, realm, and transport URL are required.");
+        return;
+      }
+      if (userAgent) {
+        logWebRTC("Already registered or connecting.");
+        return;
+      }
+      const uri = SIP.UserAgent.makeURI(`sip:${extension}@${realm}`);
+      userAgent = new SIP.UserAgent({
+        uri,
+        authorizationUsername: extension,
+        authorizationPassword: password,
+        transportOptions: { server },
+        sessionDescriptionHandlerFactoryOptions: {
+          constraints: { audio: true, video: false },
+        },
+      });
+      userAgent.delegate = {
+        onInvite: async (invitation) => {
+          activeSession = invitation;
+          logWebRTC("Incoming call received.");
+          await invitation.accept({
+            sessionDescriptionHandlerOptions: {
+              constraints: { audio: true, video: false },
+            },
+          });
+          attachRemoteAudio(invitation);
+          logWebRTC("Incoming call answered.");
+        },
+      };
+      await userAgent.start();
+      registerer = new SIP.Registerer(userAgent);
+      await registerer.register();
+      logWebRTC(`Registered ${extension}@${realm} via ${server}`);
+    } catch (err) {
+      logWebRTC(`Register failed: ${err}`);
+      userAgent = null;
+      registerer = null;
+    }
+  }
+
+  async function unregisterWebRTC() {
+    try {
+      if (registerer) {
+        await registerer.unregister();
+      }
+      if (userAgent) {
+        await userAgent.stop();
+      }
+      userAgent = null;
+      registerer = null;
+      activeSession = null;
+      logWebRTC("Unregistered and disconnected.");
+    } catch (err) {
+      logWebRTC(`Unregister error: ${err}`);
+    }
+  }
+
+  async function callWebRTC() {
+    try {
+      if (!userAgent) {
+        logWebRTC("Register first.");
+        return;
+      }
+      const target = val("webrtc-target");
+      const realm = val("webrtc-realm");
+      const targetUri = buildTargetUri(target, realm);
+      if (!targetUri) {
+        logWebRTC("Destination is required.");
+        return;
+      }
+      const inviter = new SIP.Inviter(userAgent, targetUri, {
+        sessionDescriptionHandlerOptions: {
+          constraints: { audio: true, video: false },
+        },
+      });
+      activeSession = inviter;
+      inviter.stateChange.addListener((state) => {
+        logWebRTC(`Call state: ${state}`);
+        attachRemoteAudio(inviter);
+      });
+      await inviter.invite();
+      logWebRTC(`Calling ${targetUri.toString()}`);
+    } catch (err) {
+      logWebRTC(`Call failed: ${err}`);
+    }
+  }
+
+  async function hangupWebRTC() {
+    try {
+      if (!activeSession) {
+        logWebRTC("No active call.");
+        return;
+      }
+      if (activeSession.state === SIP.SessionState.Established) {
+        await activeSession.bye();
+      } else if (activeSession.state === SIP.SessionState.Initial ||
+                 activeSession.state === SIP.SessionState.Establishing) {
+        await activeSession.cancel();
+      } else if (activeSession.state === SIP.SessionState.Terminating) {
+        await activeSession.dispose();
+      }
+      logWebRTC("Hangup sent.");
+    } catch (err) {
+      logWebRTC(`Hangup error: ${err}`);
+    }
+  }
+
+  document.getElementById("webrtc-register-btn").addEventListener("click", registerWebRTC);
+  document.getElementById("webrtc-unregister-btn").addEventListener("click", unregisterWebRTC);
+  document.getElementById("webrtc-call-btn").addEventListener("click", callWebRTC);
+  document.getElementById("webrtc-hangup-btn").addEventListener("click", hangupWebRTC);
+</script>
+{% endblock %}

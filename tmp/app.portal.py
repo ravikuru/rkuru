@@ -2127,6 +2127,29 @@ def dashboard(request: Request):
     )
 
 
+@app.get("/webrtcphone", response_class=HTMLResponse)
+def webrtc_phone_page(request: Request):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    sip_host = infer_sip_server(request) or "204.29.213.58"
+    with closing(db_conn()) as conn:
+        extensions = conn.execute(
+            "SELECT extension, display_name FROM vpbx_extensions ORDER BY extension"
+        ).fetchall()
+    return templates.TemplateResponse(
+        "webrtcphone.html",
+        {
+            "request": request,
+            "user": user,
+            "webrtc_realm": sip_host,
+            "webrtc_wss_url": f"wss://{sip_host}:7443",
+            "webrtc_ws_url": f"ws://{sip_host}:5066",
+            "webrtc_extensions": extensions,
+        },
+    )
+
+
 @app.get("/queues", response_class=HTMLResponse)
 def queues_page(request: Request):
     user, denied = require_admin_or_redirect(request)
