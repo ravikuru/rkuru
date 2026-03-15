@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import os
@@ -17,11 +18,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+import websockets
 
 from queue_platform import Agent, ContactCenterPlatform, QueueConfig, RoutingStrategy
 
@@ -2139,19 +2141,77 @@ def webrtc_phone_page(request: Request):
         extensions = conn.execute(
             "SELECT extension, display_name FROM vpbx_extensions ORDER BY extension"
         ).fetchall()
+    request_host = request.headers.get("host") or sip_host
     return templates.TemplateResponse(
         "webrtcphone.html",
         {
             "request": request,
             "user": user,
             "webrtc_realm": sip_host,
-            "webrtc_wss_url": f"wss://{sip_host}:7443",
-            "webrtc_ws_url": f"ws://{sip_host}:5066",
+            # Use portal WebSocket proxy by default so clients can register even when
+            # direct FreeSWITCH WS/WSS ports are filtered by upstream firewalls.
+            "webrtc_wss_url": f"wss://{request_host}/webrtc/ws",
+            "webrtc_ws_url": f"ws://{request_host}/webrtc/ws",
             "webrtc_extensions": extensions,
             "webrtc_default_extension": WEBRTC_DEFAULT_EXTENSION,
             "webrtc_default_password": WEBRTC_DEFAULT_PASSWORD,
         },
     )
+
+
+@app.websocket("/webrtc/ws")
+async def webrtc_ws_proxy(websocket: WebSocket):
+    session = websocket.scope.get("session") or {}
+    if session.get("user") != DEFAULT_ADMIN_USER:
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
+    await websocket.accept(subprotocol="sip")
+    upstream_host = websocket.url.hostname or "204.29.213.58"
+    upstream_url = f"ws://{upstream_host}:5066"
+    upstream = None
+    try:
+        upstream = await websockets.connect(
+            upstream_url,
+            subprotocols=["sip"],
+            ping_interval=20,
+            ping_timeout=20,
+        )
+
+        async def client_to_upstream():
+            while True:
+                message = await websocket.receive()
+                msg_type = message.get("type")
+                if msg_type == "websocket.disconnect":
+                    break
+                if message.get("text") is not None:
+                    await upstream.send(message["text"])
+                elif message.get("bytes") is not None:
+                    await upstream.send(message["bytes"])
+
+        async def upstream_to_client():
+            while True:
+                incoming = await upstream.recv()
+                if isinstance(incoming, bytes):
+                    await websocket.send_bytes(incoming)
+                else:
+                    await websocket.send_text(incoming)
+
+        await asyncio.gather(client_to_upstream(), upstream_to_client())
+    except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
+        pass
+    except Exception:
+        pass
+    finally:
+        if upstream is not None:
+            try:
+                await upstream.close()
+            except Exception:
+                pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.get("/queues", response_class=HTMLResponse)

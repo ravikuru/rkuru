@@ -16,8 +16,8 @@
     </label>
     <label>Transport
       <select id="webrtc-transport">
-        <option value="wss">wss (recommended)</option>
-        <option value="ws">ws</option>
+        <option value="ws" selected>ws (fast test mode)</option>
+        <option value="wss">wss (requires trusted TLS cert)</option>
       </select>
     </label>
     <label>WSS URL
@@ -36,11 +36,11 @@
       </select>
     </label>
     <div style="display:flex; gap:8px; align-items:end;">
-      <button id="webrtc-register-btn" type="button">Register</button>
-      <button id="webrtc-unregister-btn" type="button">Unregister</button>
-      <button id="webrtc-audio-call-btn" type="button">Call Audio</button>
-      <button id="webrtc-video-call-btn" type="button">Call Video</button>
-      <button id="webrtc-hangup-btn" type="button">Hangup</button>
+      <button id="webrtc-register-btn" type="button" onclick="registerWebRTC()">Register</button>
+      <button id="webrtc-unregister-btn" type="button" onclick="unregisterWebRTC()">Unregister</button>
+      <button id="webrtc-audio-call-btn" type="button" onclick="callWebRTC(((val('webrtc-call-type') || 'audio') === 'video') ? 'video' : 'audio')">Call Audio</button>
+      <button id="webrtc-video-call-btn" type="button" onclick="callWebRTC('video')">Call Video</button>
+      <button id="webrtc-hangup-btn" type="button" onclick="hangupWebRTC()">Hangup</button>
     </div>
   </form>
   <p class="hint">WebRTC is active on this server. For camera/mic in browser, open portal over HTTPS and use trusted TLS cert.</p>
@@ -79,7 +79,7 @@
   <pre id="webrtc-log">Ready.</pre>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/sip.js/0.20.0/sip.min.js"></script>
+<script src="/static/sip.min.js?v=1"></script>
 <script>
   let userAgent = null;
   let registerer = null;
@@ -159,7 +159,7 @@
     });
   }
 
-  async function registerWebRTC() {
+  async function registerWebRTC(allowFallback = true) {
     try {
       if (!window.SIP || !window.SIP.UserAgent) {
         logWebRTC("SIP.js failed to load.");
@@ -215,10 +215,24 @@
       };
       await userAgent.start();
       registerer = new SIP.Registerer(userAgent);
+      registerer.stateChange.addListener((state) => {
+        logWebRTC(`Register state: ${state}`);
+      });
       await registerer.register();
-      logWebRTC(`Registered ${extension}@${realm} via ${server}`);
+      logWebRTC(`Register request sent for ${extension}@${realm} via ${server}`);
     } catch (err) {
       logWebRTC(`Register failed: ${err}`);
+      if (allowFallback && val("webrtc-transport") === "wss") {
+        const wsUrl = val("webrtc-ws-url");
+        if (wsUrl) {
+          const transportSelect = document.getElementById("webrtc-transport");
+          if (transportSelect) transportSelect.value = "ws";
+          logWebRTC(`Auto-fallback: retrying via ws (${wsUrl})`);
+          userAgent = null;
+          registerer = null;
+          return registerWebRTC(false);
+        }
+      }
       userAgent = null;
       registerer = null;
     }
@@ -308,21 +322,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     logWebRTC(window.SIP ? "SIP.js loaded." : "SIP.js not loaded.");
-    const btnRegister = document.getElementById("webrtc-register-btn");
-    const btnUnregister = document.getElementById("webrtc-unregister-btn");
-    const btnAudio = document.getElementById("webrtc-audio-call-btn");
-    const btnVideo = document.getElementById("webrtc-video-call-btn");
-    const btnHangup = document.getElementById("webrtc-hangup-btn");
-    if (btnRegister) btnRegister.addEventListener("click", registerWebRTC);
-    if (btnUnregister) btnUnregister.addEventListener("click", unregisterWebRTC);
-    if (btnAudio) {
-      btnAudio.addEventListener("click", function () {
-        const mode = (val("webrtc-call-type") || "audio") === "video" ? "video" : "audio";
-        callWebRTC(mode);
-      });
-    }
-    if (btnVideo) btnVideo.addEventListener("click", function () { callWebRTC("video"); });
-    if (btnHangup) btnHangup.addEventListener("click", hangupWebRTC);
+    logWebRTC("WebRTC page ready. Click Register.");
   });
 </script>
 {% endblock %}
