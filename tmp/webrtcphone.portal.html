@@ -69,6 +69,10 @@
         <option value="video">video</option>
       </select>
     </label>
+    <label style="display:flex; align-items:center; gap:8px;">
+      <input id="webrtc-allow-recvonly" type="checkbox" />
+      Allow one-way fallback (hear-only) when mic is unavailable
+    </label>
     <div style="display:flex; gap:8px; align-items:end;">
       <button id="webrtc-register-btn" type="button">Register</button>
       <button id="webrtc-unregister-btn" type="button">Unregister</button>
@@ -385,7 +389,12 @@
       try {
         stream = await ensureLocalMedia(mode);
       } catch (mediaErr) {
+        const allowRecvOnly = !!document.getElementById("webrtc-allow-recvonly")?.checked;
         logWebRTC(`Media open warning: ${mediaErr}`);
+        if (!allowRecvOnly) {
+          logWebRTC("Microphone unavailable. Enable HTTPS + mic permission, or check one-way fallback.");
+          return;
+        }
         logWebRTC("Continuing call in receive-only mode (no local mic/camera).");
       }
       const sdhOptions = stream
