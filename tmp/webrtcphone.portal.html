@@ -170,6 +170,13 @@
     return { audio: false, video: false };
   }
 
+  function fallbackOfferOptions(mode) {
+    return {
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: mode === "video",
+    };
+  }
+
   async function ensureLocalMedia(mode) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       logWebRTC("Browser media API not available.");
@@ -188,6 +195,13 @@
   }
 
   function attachSessionMedia(session) {
+    function tryPlay(el) {
+      if (!el || typeof el.play !== "function") return;
+      const maybePromise = el.play();
+      if (maybePromise && typeof maybePromise.catch === "function") {
+        maybePromise.catch((err) => logWebRTC(`Playback warning: ${err}`));
+      }
+    }
     const remoteAudio = document.getElementById("remote-audio");
     const remoteVideo = document.getElementById("remote-video");
     if ((!remoteAudio && !remoteVideo) || !session || !session.sessionDescriptionHandler) {
@@ -195,12 +209,38 @@
     }
     const pc = session.sessionDescriptionHandler.peerConnection;
     if (!pc) return;
-    const remoteStream = new MediaStream();
+    if (!pc._calltureRemoteStream) {
+      pc._calltureRemoteStream = new MediaStream();
+    }
+    const remoteStream = pc._calltureRemoteStream;
     pc.getReceivers().forEach((receiver) => {
-      if (receiver.track) remoteStream.addTrack(receiver.track);
+      if (receiver.track && !remoteStream.getTracks().some((t) => t.id === receiver.track.id)) {
+        remoteStream.addTrack(receiver.track);
+      }
     });
-    if (remoteAudio) remoteAudio.srcObject = remoteStream;
-    if (remoteVideo) remoteVideo.srcObject = remoteStream;
+    if (!pc._calltureTrackBound) {
+      pc._calltureTrackBound = true;
+      pc.addEventListener("track", (event) => {
+        if (event.streams && event.streams[0]) {
+          if (remoteAudio) remoteAudio.srcObject = event.streams[0];
+          if (remoteVideo) remoteVideo.srcObject = event.streams[0];
+          tryPlay(remoteAudio);
+          tryPlay(remoteVideo);
+          return;
+        }
+        if (event.track && !remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+          remoteStream.addTrack(event.track);
+        }
+        if (remoteAudio) remoteAudio.srcObject = remoteStream;
+        if (remoteVideo) remoteVideo.srcObject = remoteStream;
+        tryPlay(remoteAudio);
+        tryPlay(remoteVideo);
+      });
+    }
+    if (remoteAudio && !remoteAudio.srcObject) remoteAudio.srcObject = remoteStream;
+    if (remoteVideo && !remoteVideo.srcObject) remoteVideo.srcObject = remoteStream;
+    tryPlay(remoteAudio);
+    tryPlay(remoteVideo);
   }
 
   function bindSessionState(session, label) {
@@ -348,12 +388,17 @@
         logWebRTC(`Media open warning: ${mediaErr}`);
         logWebRTC("Continuing call in receive-only mode (no local mic/camera).");
       }
-      const constraints = stream ? mediaConstraints(mode) : fallbackMediaConstraints();
+      const sdhOptions = stream
+        ? {
+            constraints: mediaConstraints(mode),
+            localMediaStream: stream || undefined,
+          }
+        : {
+            constraints: fallbackMediaConstraints(),
+            offerOptions: fallbackOfferOptions(mode),
+          };
       const inviter = new SIP.Inviter(userAgent, targetUri, {
-        sessionDescriptionHandlerOptions: {
-          constraints,
-          localMediaStream: stream || undefined,
-        },
+        sessionDescriptionHandlerOptions: sdhOptions,
       });
       activeSession = inviter;
       bindSessionState(inviter, "outgoing");
