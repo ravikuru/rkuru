@@ -1322,6 +1322,32 @@ def fs_cli(command: str) -> str:
     return output
 
 
+def infer_webrtc_realm() -> str:
+    if PROVISION_SIP_SERVER:
+        return PROVISION_SIP_SERVER.split(":", 1)[0].strip()
+    domain_lines = (fs_cli("global_getvar domain") or "").strip().splitlines()
+    if domain_lines:
+        candidate = domain_lines[0].strip()
+        if re.fullmatch(r"[A-Za-z0-9.-]+", candidate):
+            return candidate
+    return "204.29.213.58"
+
+
+def unique_nonempty(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = (item or "").strip()
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
 def write_root_file(path: str, content: str) -> None:
     subprocess.run(
         ["sudo", "/usr/bin/tee", path],
@@ -2136,12 +2162,15 @@ def webrtc_phone_page(request: Request):
     user, denied = require_admin_or_redirect(request)
     if denied:
         return denied
-    sip_host = infer_sip_server(request) or "204.29.213.58"
+    sip_host = infer_webrtc_realm()
     with closing(db_conn()) as conn:
         extensions = conn.execute(
             "SELECT extension, display_name FROM vpbx_extensions ORDER BY extension"
         ).fetchall()
-    request_host = request.headers.get("host") or sip_host
+    public_base_url = request_public_base_url(request)
+    public_host_port = public_base_url.split("://", 1)[1] if "://" in public_base_url else (request.headers.get("host") or sip_host)
+    webrtc_ws_url = f"ws://{public_host_port}/webrtc/ws"
+    webrtc_wss_url = f"wss://{public_host_port}/webrtc/ws"
     return templates.TemplateResponse(
         "webrtcphone.html",
         {
@@ -2150,8 +2179,8 @@ def webrtc_phone_page(request: Request):
             "webrtc_realm": sip_host,
             # Use portal WebSocket proxy by default so clients can register even when
             # direct FreeSWITCH WS/WSS ports are filtered by upstream firewalls.
-            "webrtc_wss_url": f"wss://{request_host}/webrtc/ws",
-            "webrtc_ws_url": f"ws://{request_host}/webrtc/ws",
+            "webrtc_wss_url": webrtc_wss_url,
+            "webrtc_ws_url": webrtc_ws_url,
             "webrtc_extensions": extensions,
             "webrtc_default_extension": WEBRTC_DEFAULT_EXTENSION,
             "webrtc_default_password": WEBRTC_DEFAULT_PASSWORD,
@@ -2167,16 +2196,34 @@ async def webrtc_ws_proxy(websocket: WebSocket):
         return
 
     await websocket.accept(subprotocol="sip")
-    upstream_host = websocket.url.hostname or "204.29.213.58"
-    upstream_url = f"ws://{upstream_host}:5066"
+    upstream_hosts = unique_nonempty(
+        [
+            infer_webrtc_realm(),
+            websocket.url.hostname or "",
+            "127.0.0.1",
+            "localhost",
+        ]
+    )
     upstream = None
+    last_error: Exception | None = None
     try:
-        upstream = await websockets.connect(
-            upstream_url,
-            subprotocols=["sip"],
-            ping_interval=20,
-            ping_timeout=20,
-        )
+        for host in upstream_hosts:
+            try:
+                upstream = await websockets.connect(
+                    f"ws://{host}:5066",
+                    subprotocols=["sip"],
+                    ping_interval=20,
+                    ping_timeout=20,
+                    open_timeout=4,
+                    close_timeout=2,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+        if upstream is None:
+            print(f"WebRTC proxy upstream unavailable hosts={upstream_hosts} last_error={last_error}")
+            await websocket.close(code=1011, reason="Upstream WS unavailable")
+            return
 
         async def client_to_upstream():
             while True:
@@ -2200,8 +2247,8 @@ async def webrtc_ws_proxy(websocket: WebSocket):
         await asyncio.gather(client_to_upstream(), upstream_to_client())
     except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
         pass
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"WebRTC proxy runtime error: {exc}")
     finally:
         if upstream is not None:
             try:
