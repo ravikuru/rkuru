@@ -29,14 +29,21 @@
     <label>Destination (number or SIP URI)
       <input id="webrtc-target" placeholder="1000 or sip:1000@{{ webrtc_realm }}" />
     </label>
+    <label>Call Type
+      <select id="webrtc-call-type">
+        <option value="audio">audio</option>
+        <option value="video">video</option>
+      </select>
+    </label>
     <div style="display:flex; gap:8px; align-items:end;">
       <button id="webrtc-register-btn" type="button">Register</button>
       <button id="webrtc-unregister-btn" type="button">Unregister</button>
-      <button id="webrtc-call-btn" type="button">Call</button>
+      <button id="webrtc-audio-call-btn" type="button">Call Audio</button>
+      <button id="webrtc-video-call-btn" type="button">Call Video</button>
       <button id="webrtc-hangup-btn" type="button">Hangup</button>
     </div>
   </form>
-  <p class="hint">WebRTC is active on this server. If browser blocks WSS, trust/install a valid TLS cert for this host.</p>
+  <p class="hint">WebRTC is active on this server. For camera/mic in browser, open portal over HTTPS and use trusted TLS cert.</p>
 </div>
 
 <div class="card">
@@ -55,9 +62,16 @@
   </table>
 </div>
 
-<div class="card">
-  <h3>Call Audio</h3>
-  <audio id="remote-audio" autoplay controls></audio>
+<div class="grid">
+  <div class="card">
+    <h3>Local Video Preview</h3>
+    <video id="local-video" autoplay playsinline muted style="width:100%; max-height:320px; background:#000; border-radius:8px;"></video>
+  </div>
+  <div class="card">
+    <h3>Remote Video</h3>
+    <video id="remote-video" autoplay playsinline controls style="width:100%; max-height:320px; background:#000; border-radius:8px;"></video>
+    <audio id="remote-audio" autoplay controls style="width:100%; margin-top:10px;"></audio>
+  </div>
 </div>
 
 <div class="card">
@@ -70,6 +84,7 @@
   let userAgent = null;
   let registerer = null;
   let activeSession = null;
+  let localStream = null;
 
   function logWebRTC(msg) {
     const box = document.getElementById("webrtc-log");
@@ -97,9 +112,31 @@
     return SIP.UserAgent.makeURI(`sip:${rawTarget}@${realm}`);
   }
 
-  function attachRemoteAudio(session) {
+  function mediaConstraints(mode) {
+    return { audio: true, video: mode === "video" };
+  }
+
+  async function ensureLocalMedia(mode) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      logWebRTC("Browser media API not available.");
+      return null;
+    }
+    if (localStream) {
+      localStream.getTracks().forEach((track) => track.stop());
+      localStream = null;
+    }
+    localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints(mode));
+    const localVideo = document.getElementById("local-video");
+    if (localVideo) {
+      localVideo.srcObject = localStream;
+    }
+    return localStream;
+  }
+
+  function attachSessionMedia(session) {
     const remoteAudio = document.getElementById("remote-audio");
-    if (!remoteAudio || !session || !session.sessionDescriptionHandler) {
+    const remoteVideo = document.getElementById("remote-video");
+    if ((!remoteAudio && !remoteVideo) || !session || !session.sessionDescriptionHandler) {
       return;
     }
     const pc = session.sessionDescriptionHandler.peerConnection;
@@ -108,7 +145,8 @@
     pc.getReceivers().forEach((receiver) => {
       if (receiver.track) remoteStream.addTrack(receiver.track);
     });
-    remoteAudio.srcObject = remoteStream;
+    if (remoteAudio) remoteAudio.srcObject = remoteStream;
+    if (remoteVideo) remoteVideo.srcObject = remoteStream;
   }
 
   async function registerWebRTC() {
@@ -137,19 +175,27 @@
         authorizationPassword: password,
         transportOptions: { server },
         sessionDescriptionHandlerFactoryOptions: {
-          constraints: { audio: true, video: false },
+          constraints: { audio: true, video: true },
         },
       });
       userAgent.delegate = {
         onInvite: async (invitation) => {
           activeSession = invitation;
           logWebRTC("Incoming call received.");
+          const preferredMode = val("webrtc-call-type") || "audio";
+          try {
+            await ensureLocalMedia(preferredMode === "video" ? "video" : "audio");
+          } catch (mediaErr) {
+            logWebRTC(`Incoming media open warning: ${mediaErr}`);
+          }
           await invitation.accept({
             sessionDescriptionHandlerOptions: {
-              constraints: { audio: true, video: false },
+              constraints: mediaConstraints(preferredMode === "video" ? "video" : "audio"),
+              localMediaStream: localStream || undefined,
             },
           });
-          attachRemoteAudio(invitation);
+          invitation.stateChange.addListener(() => attachSessionMedia(invitation));
+          attachSessionMedia(invitation);
           logWebRTC("Incoming call answered.");
         },
       };
@@ -172,6 +218,10 @@
       if (userAgent) {
         await userAgent.stop();
       }
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+        localStream = null;
+      }
       userAgent = null;
       registerer = null;
       activeSession = null;
@@ -181,7 +231,7 @@
     }
   }
 
-  async function callWebRTC() {
+  async function callWebRTC(mode) {
     try {
       if (!userAgent) {
         logWebRTC("Register first.");
@@ -194,18 +244,26 @@
         logWebRTC("Destination is required.");
         return;
       }
+      let stream = null;
+      try {
+        stream = await ensureLocalMedia(mode);
+      } catch (mediaErr) {
+        logWebRTC(`Media open failed: ${mediaErr}`);
+        return;
+      }
       const inviter = new SIP.Inviter(userAgent, targetUri, {
         sessionDescriptionHandlerOptions: {
-          constraints: { audio: true, video: false },
+          constraints: mediaConstraints(mode),
+          localMediaStream: stream || undefined,
         },
       });
       activeSession = inviter;
       inviter.stateChange.addListener((state) => {
         logWebRTC(`Call state: ${state}`);
-        attachRemoteAudio(inviter);
+        attachSessionMedia(inviter);
       });
       await inviter.invite();
-      logWebRTC(`Calling ${targetUri.toString()}`);
+      logWebRTC(`Calling ${targetUri.toString()} (${mode})`);
     } catch (err) {
       logWebRTC(`Call failed: ${err}`);
     }
@@ -225,6 +283,12 @@
       } else if (activeSession.state === SIP.SessionState.Terminating) {
         await activeSession.dispose();
       }
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+        localStream = null;
+      }
+      const localVideo = document.getElementById("local-video");
+      if (localVideo) localVideo.srcObject = null;
       logWebRTC("Hangup sent.");
     } catch (err) {
       logWebRTC(`Hangup error: ${err}`);
@@ -233,7 +297,13 @@
 
   document.getElementById("webrtc-register-btn").addEventListener("click", registerWebRTC);
   document.getElementById("webrtc-unregister-btn").addEventListener("click", unregisterWebRTC);
-  document.getElementById("webrtc-call-btn").addEventListener("click", callWebRTC);
+  document.getElementById("webrtc-audio-call-btn").addEventListener("click", function () {
+    const mode = (val("webrtc-call-type") || "audio") === "video" ? "video" : "audio";
+    callWebRTC(mode === "video" ? "video" : "audio");
+  });
+  document.getElementById("webrtc-video-call-btn").addEventListener("click", function () {
+    callWebRTC("video");
+  });
   document.getElementById("webrtc-hangup-btn").addEventListener("click", hangupWebRTC);
 </script>
 {% endblock %}
