@@ -1,9 +1,43 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>WebRTCPhone</h2>
+<style>
+  .webrtc-status-row {
+    margin: 10px 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+  }
+  .webrtc-status-badge {
+    padding: 4px 10px;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .webrtc-status-badge::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.9);
+    display: inline-block;
+  }
+  .webrtc-status-offline { background: #6b7280; }
+  .webrtc-status-connecting { background: #d97706; }
+  .webrtc-status-online { background: #15803d; }
+  .webrtc-status-error { background: #b91c1c; }
+</style>
 
 <div class="card">
   <h3>Browser Softphone (SIP over WebSocket)</h3>
+  <div class="webrtc-status-row">
+    <span>Registration Status</span>
+    <span id="webrtc-register-status" class="webrtc-status-badge webrtc-status-offline">Not Registered</span>
+  </div>
   <form class="grid-form" onsubmit="return false;">
     <label>Extension
       <input id="webrtc-extension" value="{{ webrtc_default_extension }}" placeholder="6472585272" />
@@ -93,6 +127,14 @@
     box.scrollTop = box.scrollHeight;
   }
 
+  function setRegisterStatus(text, cls) {
+    const el = document.getElementById("webrtc-register-status");
+    if (!el) return;
+    el.classList.remove("webrtc-status-offline", "webrtc-status-connecting", "webrtc-status-online", "webrtc-status-error");
+    el.classList.add(cls || "webrtc-status-offline");
+    el.textContent = text || "Not Registered";
+  }
+
   function val(id) {
     const el = document.getElementById(id);
     return el ? (el.value || "").trim() : "";
@@ -172,15 +214,18 @@
       const server = transport === "ws" ? val("webrtc-ws-url") : val("webrtc-wss-url");
       if (!extension || !password || !realm || !server) {
         logWebRTC("Extension, password, realm, and transport URL are required.");
+        setRegisterStatus("Missing Fields", "webrtc-status-error");
         return;
       }
       if (userAgent) {
         logWebRTC("Already registered or connecting.");
         return;
       }
+      setRegisterStatus("Connecting...", "webrtc-status-connecting");
       const uri = SIP.UserAgent.makeURI(`sip:${extension}@${realm}`);
       if (!uri) {
         logWebRTC("Invalid SIP URI for extension/realm.");
+        setRegisterStatus("Invalid SIP URI", "webrtc-status-error");
         return;
       }
       userAgent = new SIP.UserAgent({
@@ -217,11 +262,20 @@
       registerer = new SIP.Registerer(userAgent);
       registerer.stateChange.addListener((state) => {
         logWebRTC(`Register state: ${state}`);
+        const stateText = String(state || "");
+        if (stateText.includes("Registered")) {
+          setRegisterStatus("Registered", "webrtc-status-online");
+        } else if (stateText.includes("Unregistered")) {
+          setRegisterStatus("Not Registered", "webrtc-status-offline");
+        } else if (stateText.includes("Terminated")) {
+          setRegisterStatus("Registration Ended", "webrtc-status-offline");
+        }
       });
       await registerer.register();
       logWebRTC(`Register request sent for ${extension}@${realm} via ${server}`);
     } catch (err) {
       logWebRTC(`Register failed: ${err}`);
+      setRegisterStatus("Register Failed", "webrtc-status-error");
       if (allowFallback && val("webrtc-transport") === "wss") {
         const wsUrl = val("webrtc-ws-url");
         const isHttpsPage = window.location.protocol === "https:";
@@ -255,8 +309,10 @@
       registerer = null;
       activeSession = null;
       logWebRTC("Unregistered and disconnected.");
+      setRegisterStatus("Not Registered", "webrtc-status-offline");
     } catch (err) {
       logWebRTC(`Unregister error: ${err}`);
+      setRegisterStatus("Unregister Error", "webrtc-status-error");
     }
   }
 
@@ -324,6 +380,7 @@
   document.addEventListener("DOMContentLoaded", function () {
     logWebRTC(window.SIP ? "SIP.js loaded." : "SIP.js not loaded.");
     logWebRTC("WebRTC page ready. Click Register.");
+    setRegisterStatus("Not Registered", "webrtc-status-offline");
     const transportSelect = document.getElementById("webrtc-transport");
     if (transportSelect && window.location.protocol === "https:") {
       transportSelect.value = "wss";
