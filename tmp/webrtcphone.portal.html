@@ -79,10 +79,9 @@
   <pre id="webrtc-log">Ready.</pre>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/sip.js@0.21.2/lib/index.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jssip@3.10.1/dist/jssip.min.js"></script>
 <script>
   let userAgent = null;
-  let registerer = null;
   let activeSession = null;
   let localStream = null;
 
@@ -101,15 +100,15 @@
   function useExtension(ext) {
     const input = document.getElementById("webrtc-extension");
     if (input) input.value = ext || "";
-    input && input.focus();
+    if (input) input.focus();
   }
 
   function buildTargetUri(rawTarget, realm) {
     if (!rawTarget) return null;
     if (rawTarget.toLowerCase().startsWith("sip:")) {
-      return SIP.UserAgent.makeURI(rawTarget);
+      return rawTarget;
     }
-    return SIP.UserAgent.makeURI(`sip:${rawTarget}@${realm}`);
+    return `sip:${rawTarget}@${realm}`;
   }
 
   function mediaConstraints(mode) {
@@ -136,10 +135,10 @@
   function attachSessionMedia(session) {
     const remoteAudio = document.getElementById("remote-audio");
     const remoteVideo = document.getElementById("remote-video");
-    if ((!remoteAudio && !remoteVideo) || !session || !session.sessionDescriptionHandler) {
+    if ((!remoteAudio && !remoteVideo) || !session || !session.connection) {
       return;
     }
-    const pc = session.sessionDescriptionHandler.peerConnection;
+    const pc = session.connection;
     if (!pc) return;
     const remoteStream = new MediaStream();
     pc.getReceivers().forEach((receiver) => {
@@ -149,10 +148,38 @@
     if (remoteVideo) remoteVideo.srcObject = remoteStream;
   }
 
+  function bindSessionEvents(session) {
+    if (!session) return;
+    session.on("accepted", function () {
+      logWebRTC("Call accepted.");
+      attachSessionMedia(session);
+    });
+    session.on("confirmed", function () {
+      logWebRTC("Call confirmed.");
+      attachSessionMedia(session);
+    });
+    session.on("ended", function () {
+      logWebRTC("Call ended.");
+      activeSession = null;
+    });
+    session.on("failed", function (e) {
+      logWebRTC(`Call failed: ${e && e.cause ? e.cause : "unknown"}`);
+      activeSession = null;
+    });
+    session.on("peerconnection", function () {
+      attachSessionMedia(session);
+      if (session.connection) {
+        session.connection.addEventListener("track", function () {
+          attachSessionMedia(session);
+        });
+      }
+    });
+  }
+
   async function registerWebRTC() {
     try {
-      if (!window.SIP) {
-        logWebRTC("SIP.js failed to load.");
+      if (!window.JsSIP) {
+        logWebRTC("JsSIP failed to load.");
         return;
       }
       const extension = val("webrtc-extension");
@@ -168,19 +195,31 @@
         logWebRTC("Already registered or connecting.");
         return;
       }
-      const uri = SIP.UserAgent.makeURI(`sip:${extension}@${realm}`);
-      userAgent = new SIP.UserAgent({
-        uri,
-        authorizationUsername: extension,
-        authorizationPassword: password,
-        transportOptions: { server },
-        sessionDescriptionHandlerFactoryOptions: {
-          constraints: { audio: true, video: true },
-        },
+      const socket = new JsSIP.WebSocketInterface(server);
+      userAgent = new JsSIP.UA({
+        sockets: [socket],
+        uri: `sip:${extension}@${realm}`,
+        password: password,
+        register: true,
+        session_timers: false,
       });
-      userAgent.delegate = {
-        onInvite: async (invitation) => {
-          activeSession = invitation;
+      userAgent.on("connected", function () {
+        logWebRTC("WebSocket connected.");
+      });
+      userAgent.on("disconnected", function () {
+        logWebRTC("WebSocket disconnected.");
+      });
+      userAgent.on("registered", function () {
+        logWebRTC(`Registered ${extension}@${realm} via ${server}`);
+      });
+      userAgent.on("registrationFailed", function (e) {
+        logWebRTC(`Register failed: ${e && e.cause ? e.cause : "unknown"}`);
+      });
+      userAgent.on("newRTCSession", async function (e) {
+        const session = e.session;
+        activeSession = session;
+        bindSessionEvents(session);
+        if (e.originator === "remote") {
           logWebRTC("Incoming call received.");
           const preferredMode = val("webrtc-call-type") || "audio";
           try {
@@ -188,42 +227,32 @@
           } catch (mediaErr) {
             logWebRTC(`Incoming media open warning: ${mediaErr}`);
           }
-          await invitation.accept({
-            sessionDescriptionHandlerOptions: {
-              constraints: mediaConstraints(preferredMode === "video" ? "video" : "audio"),
-              localMediaStream: localStream || undefined,
-            },
+          session.answer({
+            mediaConstraints: mediaConstraints(preferredMode === "video" ? "video" : "audio"),
+            mediaStream: localStream || undefined,
           });
-          invitation.stateChange.addListener(() => attachSessionMedia(invitation));
-          attachSessionMedia(invitation);
           logWebRTC("Incoming call answered.");
-        },
-      };
-      await userAgent.start();
-      registerer = new SIP.Registerer(userAgent);
-      await registerer.register();
-      logWebRTC(`Registered ${extension}@${realm} via ${server}`);
+        }
+      });
+      userAgent.start();
+      logWebRTC("Register command sent.");
     } catch (err) {
       logWebRTC(`Register failed: ${err}`);
       userAgent = null;
-      registerer = null;
     }
   }
 
   async function unregisterWebRTC() {
     try {
-      if (registerer) {
-        await registerer.unregister();
-      }
       if (userAgent) {
-        await userAgent.stop();
+        userAgent.unregister({ all: true });
+        userAgent.stop();
       }
       if (localStream) {
         localStream.getTracks().forEach((track) => track.stop());
         localStream = null;
       }
       userAgent = null;
-      registerer = null;
       activeSession = null;
       logWebRTC("Unregistered and disconnected.");
     } catch (err) {
@@ -251,19 +280,16 @@
         logWebRTC(`Media open failed: ${mediaErr}`);
         return;
       }
-      const inviter = new SIP.Inviter(userAgent, targetUri, {
-        sessionDescriptionHandlerOptions: {
-          constraints: mediaConstraints(mode),
-          localMediaStream: stream || undefined,
+      const session = userAgent.call(targetUri, {
+        mediaConstraints: mediaConstraints(mode),
+        mediaStream: stream || undefined,
+        pcConfig: {
+          iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }],
         },
       });
-      activeSession = inviter;
-      inviter.stateChange.addListener((state) => {
-        logWebRTC(`Call state: ${state}`);
-        attachSessionMedia(inviter);
-      });
-      await inviter.invite();
-      logWebRTC(`Calling ${targetUri.toString()} (${mode})`);
+      activeSession = session;
+      bindSessionEvents(session);
+      logWebRTC(`Calling ${targetUri} (${mode})`);
     } catch (err) {
       logWebRTC(`Call failed: ${err}`);
     }
@@ -275,14 +301,7 @@
         logWebRTC("No active call.");
         return;
       }
-      if (activeSession.state === SIP.SessionState.Established) {
-        await activeSession.bye();
-      } else if (activeSession.state === SIP.SessionState.Initial ||
-                 activeSession.state === SIP.SessionState.Establishing) {
-        await activeSession.cancel();
-      } else if (activeSession.state === SIP.SessionState.Terminating) {
-        await activeSession.dispose();
-      }
+      activeSession.terminate();
       if (localStream) {
         localStream.getTracks().forEach((track) => track.stop());
         localStream = null;
@@ -295,15 +314,23 @@
     }
   }
 
-  document.getElementById("webrtc-register-btn").addEventListener("click", registerWebRTC);
-  document.getElementById("webrtc-unregister-btn").addEventListener("click", unregisterWebRTC);
-  document.getElementById("webrtc-audio-call-btn").addEventListener("click", function () {
-    const mode = (val("webrtc-call-type") || "audio") === "video" ? "video" : "audio";
-    callWebRTC(mode === "video" ? "video" : "audio");
+  document.addEventListener("DOMContentLoaded", function () {
+    logWebRTC(window.JsSIP ? "JsSIP loaded." : "JsSIP not loaded.");
+    const btnRegister = document.getElementById("webrtc-register-btn");
+    const btnUnregister = document.getElementById("webrtc-unregister-btn");
+    const btnAudio = document.getElementById("webrtc-audio-call-btn");
+    const btnVideo = document.getElementById("webrtc-video-call-btn");
+    const btnHangup = document.getElementById("webrtc-hangup-btn");
+    if (btnRegister) btnRegister.addEventListener("click", registerWebRTC);
+    if (btnUnregister) btnUnregister.addEventListener("click", unregisterWebRTC);
+    if (btnAudio) {
+      btnAudio.addEventListener("click", function () {
+        const mode = (val("webrtc-call-type") || "audio") === "video" ? "video" : "audio";
+        callWebRTC(mode);
+      });
+    }
+    if (btnVideo) btnVideo.addEventListener("click", function () { callWebRTC("video"); });
+    if (btnHangup) btnHangup.addEventListener("click", hangupWebRTC);
   });
-  document.getElementById("webrtc-video-call-btn").addEventListener("click", function () {
-    callWebRTC("video");
-  });
-  document.getElementById("webrtc-hangup-btn").addEventListener("click", hangupWebRTC);
 </script>
 {% endblock %}
