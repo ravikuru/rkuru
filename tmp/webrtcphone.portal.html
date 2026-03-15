@@ -6,10 +6,10 @@
   <h3>Browser Softphone (SIP over WebSocket)</h3>
   <form class="grid-form" onsubmit="return false;">
     <label>Extension
-      <input id="webrtc-extension" placeholder="6472585272" />
+      <input id="webrtc-extension" value="{{ webrtc_default_extension }}" placeholder="6472585272" />
     </label>
     <label>Password
-      <input id="webrtc-password" type="password" placeholder="SIP password" />
+      <input id="webrtc-password" type="password" value="{{ webrtc_default_password }}" placeholder="SIP password" />
     </label>
     <label>Realm / Domain
       <input id="webrtc-realm" value="{{ webrtc_realm }}" />

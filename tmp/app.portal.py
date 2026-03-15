@@ -37,6 +37,8 @@ FAX_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tga"
 FAX_UPLOAD_DIR = Path("/tmp/callture_fax_uploads")
 FAX_FIXED_FROM_NUMBER = "6472585272"
 FAX_FIXED_FROM_NAME = "Ravi Kuru"
+WEBRTC_DEFAULT_EXTENSION = "4166287801"
+WEBRTC_DEFAULT_PASSWORD = "telcan2008!"
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -2146,6 +2148,8 @@ def webrtc_phone_page(request: Request):
             "webrtc_wss_url": f"wss://{sip_host}:7443",
             "webrtc_ws_url": f"ws://{sip_host}:5066",
             "webrtc_extensions": extensions,
+            "webrtc_default_extension": WEBRTC_DEFAULT_EXTENSION,
+            "webrtc_default_password": WEBRTC_DEFAULT_PASSWORD,
         },
     )
 
