@@ -78,6 +78,7 @@
     </div>
   </form>
   <p class="hint">WebRTC is active on this server. For camera/mic in browser, open portal over HTTPS and use trusted TLS cert.</p>
+  <p class="hint">If your browser blocks microphone on HTTP, calls can still be placed in receive-only mode.</p>
 </div>
 
 <div class="card">
@@ -147,15 +148,26 @@
   }
 
   function buildTargetUri(rawTarget, realm) {
-    if (!rawTarget) return null;
-    if (rawTarget.toLowerCase().startsWith("sip:")) {
-      return SIP.UserAgent.makeURI(rawTarget);
+    const target = (rawTarget || "").trim();
+    if (!target) return null;
+    if (target.toLowerCase().startsWith("sip:")) {
+      const body = target.slice(4).trim();
+      if (!body) return null;
+      // User entered sip:<extension> without a domain.
+      if (!body.includes("@")) {
+        return SIP.UserAgent.makeURI(`sip:${body}@${realm}`);
+      }
+      return SIP.UserAgent.makeURI(target);
     }
-    return SIP.UserAgent.makeURI(`sip:${rawTarget}@${realm}`);
+    return SIP.UserAgent.makeURI(`sip:${target}@${realm}`);
   }
 
   function mediaConstraints(mode) {
     return { audio: true, video: mode === "video" };
+  }
+
+  function fallbackMediaConstraints() {
+    return { audio: false, video: false };
   }
 
   async function ensureLocalMedia(mode) {
@@ -333,12 +345,13 @@
       try {
         stream = await ensureLocalMedia(mode);
       } catch (mediaErr) {
-        logWebRTC(`Media open failed: ${mediaErr}`);
-        return;
+        logWebRTC(`Media open warning: ${mediaErr}`);
+        logWebRTC("Continuing call in receive-only mode (no local mic/camera).");
       }
+      const constraints = stream ? mediaConstraints(mode) : fallbackMediaConstraints();
       const inviter = new SIP.Inviter(userAgent, targetUri, {
         sessionDescriptionHandlerOptions: {
-          constraints: mediaConstraints(mode),
+          constraints,
           localMediaStream: stream || undefined,
         },
       });
@@ -393,12 +406,7 @@
     const btnHangup = document.getElementById("webrtc-hangup-btn");
     if (btnRegister) btnRegister.addEventListener("click", function () { registerWebRTC(true); });
     if (btnUnregister) btnUnregister.addEventListener("click", unregisterWebRTC);
-    if (btnAudio) {
-      btnAudio.addEventListener("click", function () {
-        const mode = (val("webrtc-call-type") || "audio") === "video" ? "video" : "audio";
-        callWebRTC(mode);
-      });
-    }
+    if (btnAudio) btnAudio.addEventListener("click", function () { callWebRTC("audio"); });
     if (btnVideo) btnVideo.addEventListener("click", function () { callWebRTC("video"); });
     if (btnHangup) btnHangup.addEventListener("click", hangupWebRTC);
   });

@@ -1809,6 +1809,26 @@ def sync_conference_dialplan() -> None:
     fs_cli("reloadxml")
 
 
+def sync_webrtc_internal_user_bridge_dialplan() -> None:
+    # Route 10-digit internal extension dialing (e.g., 6472585272) to local directory users
+    # before the stock "enum" catch-all in the default context.
+    xml = textwrap.dedent(
+        """\
+        <include>
+          <extension name="callture_webrtc_internal_user_bridge">
+            <condition field="${sip_authorized}" expression="^true$"/>
+            <condition field="destination_number" expression="^([2-9]\\d{9})$">
+              <action application="set" data="callture_target_user=$1"/>
+              <action application="bridge" data="user/${callture_target_user}@$${domain}"/>
+            </condition>
+          </extension>
+        </include>
+        """
+    )
+    write_root_file("/usr/local/freeswitch/conf/dialplan/default/04_callture_webrtc_internal_bridge.xml", xml)
+    fs_cli("reloadxml")
+
+
 def sync_trunks_to_freeswitch() -> None:
     with closing(db_conn()) as conn:
         rows = conn.execute(
@@ -2024,6 +2044,7 @@ def startup() -> None:
     sync_trunks_to_freeswitch()
     sync_fax_inbound_dialplan()
     sync_conference_dialplan()
+    sync_webrtc_internal_user_bridge_dialplan()
     sync_inbound_routes_dialplan()
     sync_outbound_routes_dialplan()
     start_security_autoblock_worker()
