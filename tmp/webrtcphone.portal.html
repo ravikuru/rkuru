@@ -119,6 +119,8 @@
   let registerer = null;
   let activeSession = null;
   let localStream = null;
+  let audioDialingStartedAt = 0;
+  let audioAnswered = false;
 
   function logWebRTC(msg) {
     const box = document.getElementById("webrtc-log");
@@ -150,10 +152,26 @@
     const btn = document.getElementById("webrtc-audio-call-btn");
     if (!btn) return;
     btn.textContent = text;
+    if (text === "Dialing") {
+      audioDialingStartedAt = Date.now();
+      audioAnswered = false;
+    } else if (text === "Answered") {
+      audioAnswered = true;
+    }
   }
 
   function resetAudioCallButton() {
     setAudioCallButton("Audio Call");
+  }
+
+  function resetAudioCallButtonAfterMinDialing(minMs) {
+    if (audioAnswered || !audioDialingStartedAt) {
+      resetAudioCallButton();
+      return;
+    }
+    const elapsed = Date.now() - audioDialingStartedAt;
+    const wait = Math.max(0, (minMs || 0) - elapsed);
+    window.setTimeout(resetAudioCallButton, wait);
   }
 
   function buildTargetUri(rawTarget, realm) {
@@ -305,7 +323,7 @@
           stateText.includes("Terminating") ||
           stateText.includes("Terminated")
         ) {
-          resetAudioCallButton();
+          resetAudioCallButtonAfterMinDialing(1200);
         }
       }
       attachSessionMedia(session);
@@ -430,27 +448,38 @@
 
   async function callWebRTC(mode) {
     try {
+      if (mode === "audio") {
+        setAudioCallButton("Dialing");
+      }
       if (!userAgent) {
-        logWebRTC("Register first.");
-        return;
+        logWebRTC("Not registered. Auto-registering before call...");
+        await registerWebRTC(true);
+        if (!userAgent) {
+          logWebRTC("Auto-register failed. Please click Register and retry.");
+          resetAudioCallButton();
+          return;
+        }
       }
       const target = val("webrtc-target");
       const realm = val("webrtc-realm");
       const targetUri = buildTargetUri(target, realm);
       if (!targetUri) {
         logWebRTC("Destination is required.");
+        resetAudioCallButton();
         return;
       }
       const targetHost = targetHostFromInput(target, realm);
       logWebRTC(`Preparing call target=${targetUri.toString()} host=${targetHost || "(none)"}`);
-      if (mode === "audio") {
-        setAudioCallButton("Dialing");
-      }
       let stream = null;
       let constraints = mediaConstraints(mode);
       let offerOptions = undefined;
       try {
         stream = await ensureLocalMedia(mode);
+        if (!stream) {
+          logWebRTC("Media unavailable: using receive-only fallback to place call.");
+          constraints = fallbackMediaConstraints();
+          offerOptions = fallbackOfferOptions(mode);
+        }
       } catch (mediaErr) {
         logWebRTC(`Media open warning: ${mediaErr}`);
         logWebRTC("Mic unavailable: sending call in receive-only fallback mode.");
@@ -474,7 +503,7 @@
       logWebRTC(`Calling ${targetUri.toString()} (${mode})`);
     } catch (err) {
       logWebRTC(`Call failed: ${err}`);
-      resetAudioCallButton();
+      resetAudioCallButtonAfterMinDialing(1200);
     }
   }
 
