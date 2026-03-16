@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Settings</h2>
+{% if message %}<p class="ok">{{ message }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<div class="card narrow">
+  <h3>{% if force_password_change|default(false) %}Change Password (Required){% else %}Change Password (Optional){% endif %}</h3>
+  {% if force_password_change|default(false) %}
+  <p class="hint">First login detected. Change your password once, then this requirement will be removed.</p>
+  {% endif %}
+  <form method="post" action="/settings/password">
+    <label>Current Password</label>
+    <input type="password" name="current_password" required />
+    <label>New Password</label>
+    <input type="password" name="new_password" required />
+    <label>Confirm New Password</label>
+    <input type="password" name="confirm_password" required />
+    <button type="submit">Update Password</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>User Accounts</h3>
+  {% if can_manage_users %}
+  <form method="post" action="/settings/users" class="grid-form">
+    <label>Username<input name="username" placeholder="newuser" required /></label>
+    <label>Password<input type="password" name="password" required /></label>
+    <label>Confirm Password<input type="password" name="confirm_password" required /></label>
+    <button type="submit">Create User</button>
+  </form>
+  <p class="hint">New users can log in at /login after account creation.</p>
+  {% else %}
+  <p class="hint">Only admin can create users. You can view only your own account row below.</p>
+  {% endif %}
+
+  <table>
+    <tr><th>Username</th><th>Created</th><th>Updated</th></tr>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.username }}</td>
+      <td>{{ u.created_at }}</td>
+      <td>{{ u.updated_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}
+

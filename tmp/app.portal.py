@@ -900,6 +900,9 @@ def init_db() -> None:
             conn.execute("ALTER TABLE whitelist_ips ADD COLUMN created_by TEXT NOT NULL DEFAULT ''")
         if whitelist_cols and "active" not in whitelist_cols:
             conn.execute("ALTER TABLE whitelist_ips ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        user_cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "must_change_password" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_created_at ON security_events(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip_address)")
@@ -912,9 +915,10 @@ def init_db() -> None:
             pw_hash = hash_password(DEFAULT_ADMIN_PASSWORD, salt)
             now = datetime.now(UTC).isoformat()
             conn.execute(
-                "INSERT INTO users(username, salt, password_hash, created_at, updated_at) VALUES(?,?,?,?,?)",
+                "INSERT INTO users(username, salt, password_hash, created_at, updated_at, must_change_password) VALUES(?,?,?,?,?,0)",
                 (DEFAULT_ADMIN_USER, salt, pw_hash, now, now),
             )
+        conn.execute("UPDATE users SET must_change_password = 0 WHERE username = ?", (DEFAULT_ADMIN_USER,))
         # Remove stale membership rows that reference missing agents/queues.
         conn.execute(
             "DELETE FROM agent_queue_memberships "
@@ -1262,6 +1266,32 @@ def redirect_login() -> RedirectResponse:
 
 def redirect_settings() -> RedirectResponse:
     return RedirectResponse(url="/settings", status_code=303)
+
+
+def redirect_settings_force_password() -> RedirectResponse:
+    return RedirectResponse(url="/settings?force_password=1", status_code=303)
+
+
+def row_requires_password_change(row: sqlite3.Row | None) -> bool:
+    if row is None:
+        return False
+    try:
+        value = row["must_change_password"]
+    except Exception:
+        value = 0
+    try:
+        return int(value or 0) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def user_requires_password_change(username: str | None) -> bool:
+    name = (username or "").strip()
+    if not name:
+        return False
+    with closing(db_conn()) as conn:
+        row = conn.execute("SELECT must_change_password FROM users WHERE username = ?", (name,)).fetchone()
+    return row_requires_password_change(row)
 
 
 def require_admin_or_redirect(request: Request) -> tuple[str | None, RedirectResponse | None]:
@@ -2119,7 +2149,14 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
     candidate = hash_password(password, row["salt"])
     if secrets.compare_digest(candidate, row["password_hash"]):
         request.session["user"] = username
+        must_change_password = row_requires_password_change(row)
+        if must_change_password:
+            request.session["force_password_change"] = True
+        else:
+            request.session.pop("force_password_change", None)
         log_security_event(request, "login_success", severity="info", username=username.strip())
+        if must_change_password:
+            return redirect_settings_force_password()
         return RedirectResponse(url="/dashboard", status_code=303) if is_admin_user(username) else redirect_settings()
     log_security_event(
         request,
@@ -5345,6 +5382,14 @@ def settings_page(request: Request):
     user = require_user(request)
     if not user:
         return redirect_login()
+    force_query = (request.query_params.get("force_password") or "").strip().lower()
+    force_from_query = force_query in {"1", "true", "yes", "on"}
+    force_password_change = bool(request.session.get("force_password_change")) or force_from_query
+    if not user_requires_password_change(user):
+        force_password_change = False
+        request.session.pop("force_password_change", None)
+    elif force_password_change:
+        request.session["force_password_change"] = True
     with closing(db_conn()) as conn:
         if is_admin_user(user):
             users = conn.execute("SELECT username, created_at, updated_at FROM users ORDER BY username").fetchall()
@@ -5362,6 +5407,7 @@ def settings_page(request: Request):
             "error": None,
             "users": users,
             "can_manage_users": is_admin_user(user),
+            "force_password_change": force_password_change,
         },
     )
 
@@ -5395,6 +5441,7 @@ def change_password(
                 "error": "New password mismatch",
                 "users": users,
                 "can_manage_users": is_admin_user(user),
+                "force_password_change": bool(request.session.get("force_password_change")),
             },
         )
 
@@ -5410,6 +5457,7 @@ def change_password(
                     "error": "User not found",
                     "users": users,
                     "can_manage_users": is_admin_user(user),
+                    "force_password_change": bool(request.session.get("force_password_change")),
                 },
             )
         current_hash = hash_password(current_password, row["salt"])
@@ -5423,15 +5471,17 @@ def change_password(
                     "error": "Current password invalid",
                     "users": users,
                     "can_manage_users": is_admin_user(user),
+                    "force_password_change": bool(request.session.get("force_password_change")),
                 },
             )
         new_salt = secrets.token_hex(16)
         new_hash = hash_password(new_password, new_salt)
         conn.execute(
-            "UPDATE users SET salt = ?, password_hash = ?, updated_at = ? WHERE username = ?",
+            "UPDATE users SET salt = ?, password_hash = ?, updated_at = ?, must_change_password = 0 WHERE username = ?",
             (new_salt, new_hash, datetime.now(UTC).isoformat(), user),
         )
         conn.commit()
+    request.session.pop("force_password_change", None)
 
     with closing(db_conn()) as conn:
         if is_admin_user(user):
@@ -5450,6 +5500,7 @@ def change_password(
             "error": None,
             "users": users,
             "can_manage_users": is_admin_user(user),
+            "force_password_change": False,
         },
     )
 
@@ -5544,7 +5595,7 @@ def create_user_account(
         pw_hash = hash_password(password, salt)
         now = datetime.now(UTC).isoformat()
         conn.execute(
-            "INSERT INTO users(username, salt, password_hash, created_at, updated_at) VALUES(?,?,?,?,?)",
+            "INSERT INTO users(username, salt, password_hash, created_at, updated_at, must_change_password) VALUES(?,?,?,?,?,1)",
             (username_norm, salt, pw_hash, now, now),
         )
         conn.commit()
