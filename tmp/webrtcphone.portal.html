@@ -514,11 +514,6 @@
     try {
       if (mode === "audio") {
         setAudioCallButton("Dialing");
-        if (!window.isSecureContext) {
-          logWebRTC("Audio call blocked: insecure page context. Open portal over HTTPS (or localhost) and allow microphone.");
-          resetAudioCallButtonAfterMinDialing(1200);
-          return;
-        }
       }
       if (!userAgent) {
         logWebRTC("Not registered. Auto-registering before call...");
@@ -554,11 +549,6 @@
       try {
         stream = await ensureLocalMedia(mode);
         if (!stream || !stream.getAudioTracks || stream.getAudioTracks().length === 0) {
-          if (mode === "audio") {
-            logWebRTC("No microphone audio track available. Audio call cancelled (two-way audio required).");
-            resetAudioCallButtonAfterMinDialing(1200);
-            return;
-          }
           logWebRTC("No microphone audio track available. Placing receive-only fallback call.");
           constraints = fallbackMediaConstraints();
           offerOptions = fallbackOfferOptions(mode);
@@ -566,11 +556,6 @@
       } catch (mediaErr) {
         const name = (mediaErr && mediaErr.name) ? mediaErr.name : "MediaError";
         logWebRTC(`Microphone error: ${name} ${mediaErr || ""}`.trim());
-        if (mode === "audio") {
-          logWebRTC("Audio call cancelled: microphone access is required for two-way audio.");
-          resetAudioCallButtonAfterMinDialing(1200);
-          return;
-        }
         logWebRTC("Placing receive-only fallback call (remote can be heard; mic uplink unavailable).");
         constraints = fallbackMediaConstraints();
         offerOptions = fallbackOfferOptions(mode);
