@@ -41,6 +41,7 @@ FAX_FIXED_FROM_NUMBER = "6472585272"
 FAX_FIXED_FROM_NAME = "Ravi Kuru"
 WEBRTC_DEFAULT_EXTENSION = "4166287801"
 WEBRTC_DEFAULT_PASSWORD = "telcan2008!"
+WEBRTC_UI_BUILD = os.getenv("WEBRTC_UI_BUILD", "20260316b").strip() or "20260316b"
 # Default user-part for outbound WebRTC->external SIP From/Contact headers.
 # Override with env var WEBRTC_OUTBOUND_IDENTITY_DEFAULT if needed.
 WEBRTC_OUTBOUND_IDENTITY_DEFAULT = os.getenv("WEBRTC_OUTBOUND_IDENTITY_DEFAULT", "6472585272").strip()
@@ -2244,7 +2245,7 @@ def webrtc_phone_page(request: Request):
     public_host_port = public_base_url.split("://", 1)[1] if "://" in public_base_url else (request.headers.get("host") or sip_host)
     webrtc_ws_url = f"ws://{public_host_port}/webrtc/ws"
     webrtc_wss_url = f"wss://{public_host_port}/webrtc/ws"
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         "webrtcphone.html",
         {
             "request": request,
@@ -2258,8 +2259,14 @@ def webrtc_phone_page(request: Request):
             "webrtc_default_extension": default_extension,
             "webrtc_default_password": default_password,
             "webrtc_default_transport": default_transport,
+            "webrtc_build": WEBRTC_UI_BUILD,
         },
     )
+    # Prevent stale browser cache from serving old WebRTC JS behavior.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.post("/webrtcphone/credentials")

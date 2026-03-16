@@ -114,7 +114,7 @@
   <pre id="webrtc-log">Ready.</pre>
 </div>
 
-<script src="/static/sip.min.js?v=1"></script>
+<script src="/static/sip.min.js?v={{ webrtc_build }}"></script>
 <script>
   let userAgent = null;
   let registerer = null;
@@ -122,6 +122,7 @@
   let localStream = null;
   let audioDialingStartedAt = 0;
   let audioAnswered = false;
+  let registrationReady = false;
 
   function logWebRTC(msg) {
     const box = document.getElementById("webrtc-log");
@@ -173,6 +174,20 @@
     const elapsed = Date.now() - audioDialingStartedAt;
     const wait = Math.max(0, (minMs || 0) - elapsed);
     window.setTimeout(resetAudioCallButton, wait);
+  }
+
+  async function waitForRegistrationReady(timeoutMs) {
+    if (registrationReady) {
+      return true;
+    }
+    const deadline = Date.now() + Math.max(0, timeoutMs || 0);
+    while (Date.now() < deadline) {
+      if (registrationReady) {
+        return true;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+    }
+    return registrationReady;
   }
 
   function buildTargetUri(rawTarget, realm) {
@@ -390,10 +405,11 @@
         return;
       }
       if (userAgent) {
-        logWebRTC("Already registered or connecting.");
+        logWebRTC(registrationReady ? "Already registered." : "Registration is already in progress.");
         return;
       }
       setRegisterStatus("Connecting...", "webrtc-status-connecting");
+      registrationReady = false;
       const uri = SIP.UserAgent.makeURI(`sip:${extension}@${realm}`);
       if (!uri) {
         logWebRTC("Invalid SIP URI for extension/realm.");
@@ -436,10 +452,13 @@
         logWebRTC(`Register state: ${state}`);
         const stateText = String(state || "");
         if (stateText.includes("Registered")) {
+          registrationReady = true;
           setRegisterStatus("Registered", "webrtc-status-online");
         } else if (stateText.includes("Unregistered")) {
+          registrationReady = false;
           setRegisterStatus("Not Registered", "webrtc-status-offline");
         } else if (stateText.includes("Terminated")) {
+          registrationReady = false;
           setRegisterStatus("Registration Ended", "webrtc-status-offline");
         }
       });
@@ -462,6 +481,7 @@
       }
       userAgent = null;
       registerer = null;
+      registrationReady = false;
     }
   }
 
@@ -480,6 +500,7 @@
       userAgent = null;
       registerer = null;
       activeSession = null;
+      registrationReady = false;
       resetAudioCallButton();
       logWebRTC("Unregistered and disconnected.");
       setRegisterStatus("Not Registered", "webrtc-status-offline");
@@ -500,6 +521,15 @@
         if (!userAgent) {
           logWebRTC("Auto-register failed. Please click Register and retry.");
           resetAudioCallButton();
+          return;
+        }
+      }
+      if (!registrationReady) {
+        logWebRTC("Waiting for registration to complete before dialing...");
+        const ready = await waitForRegistrationReady(6000);
+        if (!ready) {
+          logWebRTC("Registration is not ready yet. Please wait for green Registered status, then retry.");
+          resetAudioCallButtonAfterMinDialing(2500);
           return;
         }
       }
@@ -581,6 +611,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     logWebRTC(window.SIP ? "SIP.js loaded." : "SIP.js not loaded.");
+    logWebRTC("WebRTC UI build: {{ webrtc_build }}");
     logWebRTC("WebRTC page ready. Click Register.");
     logWebRTC(`Page context: protocol=${window.location.protocol} secure=${window.isSecureContext ? "yes" : "no"}`);
     setRegisterStatus("Not Registered", "webrtc-status-offline");
