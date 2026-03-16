@@ -415,8 +415,21 @@
         return;
       }
       if (userAgent) {
-        logWebRTC(registrationReady ? "Already registered." : "Registration is already in progress.");
-        return;
+        if (registrationReady) {
+          logWebRTC("Already registered.");
+          return;
+        }
+        // Recover from stale SIP.js state (common after transport/TLS changes).
+        logWebRTC("Existing SIP session appears stale. Reinitializing registration...");
+        try {
+          if (registerer) await registerer.unregister();
+        } catch (_err) {}
+        try {
+          await userAgent.stop();
+        } catch (_err) {}
+        userAgent = null;
+        registerer = null;
+        registrationReady = false;
       }
       setRegisterStatus("Connecting...", "webrtc-status-connecting");
       registrationReady = false;
