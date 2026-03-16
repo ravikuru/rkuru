@@ -72,7 +72,7 @@
     <div style="display:flex; gap:8px; align-items:end;">
       <button id="webrtc-register-btn" type="button">Register</button>
       <button id="webrtc-unregister-btn" type="button">Unregister</button>
-      <button id="webrtc-audio-call-btn" type="button">Call Audio</button>
+      <button id="webrtc-audio-call-btn" type="button">Audio Call</button>
       <button id="webrtc-video-call-btn" type="button">Call Video</button>
       <button id="webrtc-hangup-btn" type="button">Hangup</button>
     </div>
@@ -146,15 +146,14 @@
     if (input) input.focus();
   }
 
-  function setAudioCallButton(text, disabled) {
+  function setAudioCallButton(text) {
     const btn = document.getElementById("webrtc-audio-call-btn");
     if (!btn) return;
     btn.textContent = text;
-    btn.disabled = !!disabled;
   }
 
   function resetAudioCallButton() {
-    setAudioCallButton("Call Audio", false);
+    setAudioCallButton("Audio Call");
   }
 
   function buildTargetUri(rawTarget, realm) {
@@ -294,12 +293,12 @@
           stateText.includes("Initial") ||
           stateText.includes("Establishing")
         ) {
-          setAudioCallButton("Dialing...", true);
+          setAudioCallButton("Dialing");
         } else if (
           state === SIP.SessionState.Established ||
           stateText.includes("Established")
         ) {
-          setAudioCallButton("Answered", true);
+          setAudioCallButton("Answered");
         } else if (
           state === SIP.SessionState.Terminating ||
           state === SIP.SessionState.Terminated ||
@@ -445,7 +444,7 @@
       const targetHost = targetHostFromInput(target, realm);
       logWebRTC(`Preparing call target=${targetUri.toString()} host=${targetHost || "(none)"}`);
       if (mode === "audio") {
-        setAudioCallButton("Dialing...", true);
+        setAudioCallButton("Dialing");
       }
       let stream = null;
       let constraints = mediaConstraints(mode);
