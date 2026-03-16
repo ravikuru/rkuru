@@ -1810,16 +1810,27 @@ def sync_conference_dialplan() -> None:
 
 
 def sync_webrtc_internal_user_bridge_dialplan() -> None:
-    # Route 10-digit internal extension dialing (e.g., 6472585272) to local directory users
-    # before the stock "enum" catch-all in the default context.
+    # For authenticated WebRTC users:
+    # 1) If target host is remote, route out via external profile.
+    # 2) If target host is local domain and 10-digit, bridge to local user.
+    local_domain = infer_webrtc_realm()
+    local_domain_expr = re.escape(local_domain)
     xml = textwrap.dedent(
-        """\
+        f"""\
         <include>
+          <extension name="callture_webrtc_remote_uri_bridge">
+            <condition field="${{sip_authorized}}" expression="^true$"/>
+            <condition field="${{sip_req_host}}" expression="^(?!{local_domain_expr}$)[0-9A-Za-z.-]+$"/>
+            <condition field="destination_number" expression="^([0-9]{{7,15}})$">
+              <action application="bridge" data="sofia/external/$1@${{sip_req_host}}"/>
+            </condition>
+          </extension>
           <extension name="callture_webrtc_internal_user_bridge">
-            <condition field="${sip_authorized}" expression="^true$"/>
-            <condition field="destination_number" expression="^([2-9]\\d{9})$">
+            <condition field="${{sip_authorized}}" expression="^true$"/>
+            <condition field="${{sip_req_host}}" expression="^{local_domain_expr}$"/>
+            <condition field="destination_number" expression="^([2-9]\\d{{9}})$">
               <action application="set" data="callture_target_user=$1"/>
-              <action application="bridge" data="user/${callture_target_user}@$${domain}"/>
+              <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
             </condition>
           </extension>
         </include>
