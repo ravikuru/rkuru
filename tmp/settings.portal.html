@@ -3,6 +3,7 @@
 <h2>Settings</h2>
 {% if message %}<p class="ok">{{ message }}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if can_manage_users %}
 <div class="card narrow">
   <h3>Change Password (Optional)</h3>
   <form method="post" action="/settings/password">
@@ -15,6 +16,7 @@
     <button type="submit">Update Password</button>
   </form>
 </div>
+{% endif %}
 
 <div class="card">
   <h3>User Accounts</h3>
