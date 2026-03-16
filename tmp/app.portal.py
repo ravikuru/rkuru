@@ -1346,13 +1346,35 @@ def fs_cli(command: str) -> str:
 
 def infer_webrtc_realm() -> str:
     if PROVISION_SIP_SERVER:
-        return PROVISION_SIP_SERVER.split(":", 1)[0].strip()
+        candidate = sanitize_webrtc_realm(PROVISION_SIP_SERVER)
+        if candidate:
+            return candidate
     domain_lines = (fs_cli("global_getvar domain") or "").strip().splitlines()
     if domain_lines:
-        candidate = domain_lines[0].strip()
+        candidate = sanitize_webrtc_realm(domain_lines[0])
         if re.fullmatch(r"[A-Za-z0-9.-]+", candidate):
             return candidate
     return "204.29.213.58"
+
+
+def sanitize_webrtc_realm(value: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        return ""
+    candidate = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", candidate)
+    lowered = candidate.lower()
+    if lowered.startswith("sip:") or lowered.startswith("sips:"):
+        candidate = candidate.split(":", 1)[1]
+    candidate = candidate.split("/", 1)[0].split(";", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if "@" in candidate:
+        candidate = candidate.rsplit("@", 1)[1]
+    if candidate.startswith("[") and "]" in candidate:
+        candidate = candidate[1 : candidate.index("]")]
+    elif candidate.count(":") == 1:
+        host, port = candidate.split(":", 1)
+        if port.isdigit():
+            candidate = host
+    return candidate.strip().lower()
 
 
 def unique_nonempty(items: list[str]) -> list[str]:
@@ -2254,7 +2276,7 @@ def webrtc_phone_page(request: Request):
         if (saved["sip_password"] or "").strip():
             default_password = str(saved["sip_password"]).strip()
         if (saved["realm"] or "").strip():
-            default_realm = str(saved["realm"]).strip()
+            default_realm = sanitize_webrtc_realm(str(saved["realm"]).strip()) or sip_host
         if str(saved["transport"] or "").strip().lower() == "wss":
             default_transport = "wss"
     public_base_url = request_public_base_url(request)
@@ -2302,7 +2324,7 @@ def save_webrtc_credentials(
 
     ext_value = (extension or "").strip()
     pw_value = (sip_password or "").strip()
-    realm_value = (realm or "").strip() or infer_webrtc_realm()
+    realm_value = sanitize_webrtc_realm((realm or "").strip()) or infer_webrtc_realm()
     transport_value = (transport or "ws").strip().lower()
     if transport_value not in {"ws", "wss"}:
         transport_value = "ws"

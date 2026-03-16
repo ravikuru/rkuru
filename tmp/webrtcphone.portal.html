@@ -144,6 +144,28 @@
     return el ? (el.value || "").trim() : "";
   }
 
+  function normalizeRealm(rawRealm) {
+    let realm = (rawRealm || "").trim();
+    if (!realm) return "";
+    realm = realm.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    if (/^sips?:/i.test(realm)) {
+      realm = realm.split(":", 2)[1] || "";
+    }
+    realm = realm.split("/", 1)[0].split(";", 1)[0].split("?", 1)[0].split("#", 1)[0];
+    if (realm.includes("@")) {
+      realm = realm.split("@").pop() || "";
+    }
+    if (realm.startsWith("[") && realm.includes("]")) {
+      realm = realm.slice(1, realm.indexOf("]"));
+    } else {
+      const parts = realm.split(":");
+      if (parts.length === 2 && /^[0-9]+$/.test(parts[1])) {
+        realm = parts[0];
+      }
+    }
+    return realm.trim().toLowerCase();
+  }
+
   function useExtension(ext) {
     const input = document.getElementById("webrtc-extension");
     if (input) input.value = ext || "";
@@ -236,11 +258,17 @@
     try {
       const extension = val("webrtc-extension");
       const sipPassword = val("webrtc-password");
-      const realm = val("webrtc-realm");
+      const realmInput = val("webrtc-realm");
+      const realm = normalizeRealm(realmInput);
       const transport = val("webrtc-transport");
       if (!extension || !sipPassword || !realm) {
         logWebRTC("Cannot save: extension, password, and realm are required.");
         return false;
+      }
+      if (realm !== realmInput) {
+        const realmInputEl = document.getElementById("webrtc-realm");
+        if (realmInputEl) realmInputEl.value = realm;
+        logWebRTC(`Realm normalized to ${realm} for SIP registration.`);
       }
       const body = new URLSearchParams();
       body.set("extension", extension);
@@ -406,13 +434,19 @@
       }
       const extension = val("webrtc-extension");
       const password = val("webrtc-password");
-      const realm = val("webrtc-realm");
+      const realmInput = val("webrtc-realm");
+      const realm = normalizeRealm(realmInput);
       const transport = val("webrtc-transport");
       const server = transport === "ws" ? val("webrtc-ws-url") : val("webrtc-wss-url");
       if (!extension || !password || !realm || !server) {
         logWebRTC("Extension, password, realm, and transport URL are required.");
         setRegisterStatus("Missing Fields", "webrtc-status-error");
         return;
+      }
+      if (realm !== realmInput) {
+        const realmInputEl = document.getElementById("webrtc-realm");
+        if (realmInputEl) realmInputEl.value = realm;
+        logWebRTC(`Realm normalized to ${realm} for SIP registration.`);
       }
       if (userAgent) {
         if (registrationReady) {
@@ -557,7 +591,7 @@
         }
       }
       const target = val("webrtc-target");
-      const realm = val("webrtc-realm");
+      const realm = normalizeRealm(val("webrtc-realm"));
       const targetUri = buildTargetUri(target, realm);
       if (!targetUri) {
         logWebRTC("Destination is required.");
@@ -650,6 +684,14 @@
     if (transportSelect && window.location.protocol === "https:") {
       transportSelect.value = "wss";
       logWebRTC("HTTPS detected: using wss transport.");
+    }
+    const realmInput = document.getElementById("webrtc-realm");
+    if (realmInput) {
+      const normalized = normalizeRealm(realmInput.value || "");
+      if (normalized && normalized !== (realmInput.value || "").trim()) {
+        realmInput.value = normalized;
+        logWebRTC(`Realm normalized to ${normalized}.`);
+      }
     }
     const btnRegister = document.getElementById("webrtc-register-btn");
     const btnSaveCredentials = document.getElementById("webrtc-save-credentials-btn");
