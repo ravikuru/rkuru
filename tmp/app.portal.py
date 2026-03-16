@@ -19,7 +19,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -722,6 +722,15 @@ def init_db() -> None:
                 provision_vendor TEXT NOT NULL DEFAULT 'yealink',
                 provision_enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS webrtc_user_credentials (
+                username TEXT PRIMARY KEY,
+                extension TEXT NOT NULL,
+                sip_password TEXT NOT NULL,
+                realm TEXT NOT NULL DEFAULT '',
+                transport TEXT NOT NULL DEFAULT 'ws',
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS trunks (
@@ -2209,6 +2218,28 @@ def webrtc_phone_page(request: Request):
         extensions = conn.execute(
             "SELECT extension, display_name FROM vpbx_extensions ORDER BY extension"
         ).fetchall()
+        saved = conn.execute(
+            """
+            SELECT extension, sip_password, realm, transport
+            FROM webrtc_user_credentials
+            WHERE username = ?
+            LIMIT 1
+            """,
+            (user,),
+        ).fetchone()
+    default_extension = WEBRTC_DEFAULT_EXTENSION
+    default_password = WEBRTC_DEFAULT_PASSWORD
+    default_realm = sip_host
+    default_transport = "ws"
+    if saved is not None:
+        if (saved["extension"] or "").strip():
+            default_extension = str(saved["extension"]).strip()
+        if (saved["sip_password"] or "").strip():
+            default_password = str(saved["sip_password"]).strip()
+        if (saved["realm"] or "").strip():
+            default_realm = str(saved["realm"]).strip()
+        if str(saved["transport"] or "").strip().lower() == "wss":
+            default_transport = "wss"
     public_base_url = request_public_base_url(request)
     public_host_port = public_base_url.split("://", 1)[1] if "://" in public_base_url else (request.headers.get("host") or sip_host)
     webrtc_ws_url = f"ws://{public_host_port}/webrtc/ws"
@@ -2218,15 +2249,97 @@ def webrtc_phone_page(request: Request):
         {
             "request": request,
             "user": user,
-            "webrtc_realm": sip_host,
+            "webrtc_realm": default_realm,
             # Use portal WebSocket proxy by default so clients can register even when
             # direct FreeSWITCH WS/WSS ports are filtered by upstream firewalls.
             "webrtc_wss_url": webrtc_wss_url,
             "webrtc_ws_url": webrtc_ws_url,
             "webrtc_extensions": extensions,
-            "webrtc_default_extension": WEBRTC_DEFAULT_EXTENSION,
-            "webrtc_default_password": WEBRTC_DEFAULT_PASSWORD,
+            "webrtc_default_extension": default_extension,
+            "webrtc_default_password": default_password,
+            "webrtc_default_transport": default_transport,
         },
+    )
+
+
+@app.post("/webrtcphone/credentials")
+def save_webrtc_credentials(
+    request: Request,
+    extension: str = Form(...),
+    sip_password: str = Form(...),
+    realm: str = Form(""),
+    transport: str = Form("ws"),
+):
+    user = require_user(request)
+    if not is_admin_user(user):
+        return JSONResponse(
+            {"ok": False, "error": "Unauthorized"},
+            status_code=401,
+        )
+
+    ext_value = (extension or "").strip()
+    pw_value = (sip_password or "").strip()
+    realm_value = (realm or "").strip() or infer_webrtc_realm()
+    transport_value = (transport or "ws").strip().lower()
+    if transport_value not in {"ws", "wss"}:
+        transport_value = "ws"
+    if not ext_value:
+        return JSONResponse({"ok": False, "error": "Extension is required."}, status_code=400)
+    if not pw_value:
+        return JSONResponse({"ok": False, "error": "Password is required."}, status_code=400)
+    if not re.fullmatch(r"[0-9A-Za-z_.-]{2,64}", ext_value):
+        return JSONResponse({"ok": False, "error": "Extension format is invalid."}, status_code=400)
+    if not re.fullmatch(r"[0-9A-Za-z.-]+", realm_value):
+        return JSONResponse({"ok": False, "error": "Realm/domain format is invalid."}, status_code=400)
+
+    now_iso = datetime.now(UTC).isoformat()
+    with closing(db_conn()) as conn:
+        conn.execute(
+            """
+            INSERT INTO webrtc_user_credentials(username, extension, sip_password, realm, transport, updated_at)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(username) DO UPDATE SET
+                extension=excluded.extension,
+                sip_password=excluded.sip_password,
+                realm=excluded.realm,
+                transport=excluded.transport,
+                updated_at=excluded.updated_at
+            """,
+            (str(user), ext_value, pw_value, realm_value, transport_value, now_iso),
+        )
+        existing_ext = conn.execute(
+            "SELECT extension, display_name, context FROM vpbx_extensions WHERE extension = ?",
+            (ext_value,),
+        ).fetchone()
+        if existing_ext is None:
+            display_name = f"WebRTC {ext_value}"
+            context = "default"
+            conn.execute(
+                """
+                INSERT INTO vpbx_extensions(extension, display_name, sip_password, voicemail_enabled, context, created_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (ext_value, display_name, pw_value, 1, context, now_iso),
+            )
+        else:
+            display_name = str(existing_ext["display_name"] or f"WebRTC {ext_value}").strip() or f"WebRTC {ext_value}"
+            context = str(existing_ext["context"] or "default").strip() or "default"
+            conn.execute(
+                "UPDATE vpbx_extensions SET sip_password = ? WHERE extension = ?",
+                (pw_value, ext_value),
+            )
+        conn.commit()
+
+    sync_extension_to_freeswitch(ext_value, display_name, pw_value, context)
+    fs_cli("reloadxml")
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": f"Saved WebRTC credentials for {ext_value}. Extension synced to FreeSWITCH.",
+            "extension": ext_value,
+            "realm": realm_value,
+            "transport": transport_value,
+        }
     )
 
 

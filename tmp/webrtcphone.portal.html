@@ -50,8 +50,8 @@
     </label>
     <label>Transport
       <select id="webrtc-transport">
-        <option value="ws" selected>ws (fast test mode)</option>
-        <option value="wss">wss (requires trusted TLS cert)</option>
+        <option value="ws" {% if webrtc_default_transport != "wss" %}selected{% endif %}>ws (fast test mode)</option>
+        <option value="wss" {% if webrtc_default_transport == "wss" %}selected{% endif %}>wss (requires trusted TLS cert)</option>
       </select>
     </label>
     <label>WSS URL
@@ -71,6 +71,7 @@
     </label>
     <div style="display:flex; gap:8px; align-items:end;">
       <button id="webrtc-register-btn" type="button">Register</button>
+      <button id="webrtc-save-credentials-btn" type="button">Save Credentials</button>
       <button id="webrtc-unregister-btn" type="button">Unregister</button>
       <button id="webrtc-audio-call-btn" type="button">Audio Call</button>
       <button id="webrtc-video-call-btn" type="button">Call Video</button>
@@ -214,6 +215,48 @@
       return targetHostFromInput(`sip:${target}`, realm);
     }
     return (realm || "").trim();
+  }
+
+  async function saveWebRTCCredentials(registerAfterSave = false) {
+    try {
+      const extension = val("webrtc-extension");
+      const sipPassword = val("webrtc-password");
+      const realm = val("webrtc-realm");
+      const transport = val("webrtc-transport");
+      if (!extension || !sipPassword || !realm) {
+        logWebRTC("Cannot save: extension, password, and realm are required.");
+        return false;
+      }
+      const body = new URLSearchParams();
+      body.set("extension", extension);
+      body.set("sip_password", sipPassword);
+      body.set("realm", realm);
+      body.set("transport", transport || "ws");
+      const resp = await fetch("/webrtcphone/credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+        body: body.toString(),
+      });
+      let payload = null;
+      try {
+        payload = await resp.json();
+      } catch (parseErr) {
+        payload = null;
+      }
+      if (!resp.ok || !payload || !payload.ok) {
+        const msg = (payload && payload.error) ? payload.error : `HTTP ${resp.status}`;
+        logWebRTC(`Save credentials failed: ${msg}`);
+        return false;
+      }
+      logWebRTC(payload.message || `Saved credentials for ${extension}.`);
+      if (registerAfterSave) {
+        await registerWebRTC(true);
+      }
+      return true;
+    } catch (err) {
+      logWebRTC(`Save credentials error: ${err}`);
+      return false;
+    }
   }
 
   function mediaConstraints(mode) {
@@ -536,11 +579,13 @@
       logWebRTC("HTTPS detected: using wss transport.");
     }
     const btnRegister = document.getElementById("webrtc-register-btn");
+    const btnSaveCredentials = document.getElementById("webrtc-save-credentials-btn");
     const btnUnregister = document.getElementById("webrtc-unregister-btn");
     const btnAudio = document.getElementById("webrtc-audio-call-btn");
     const btnVideo = document.getElementById("webrtc-video-call-btn");
     const btnHangup = document.getElementById("webrtc-hangup-btn");
-    if (btnRegister) btnRegister.addEventListener("click", function () { registerWebRTC(true); });
+    if (btnRegister) btnRegister.addEventListener("click", function () { saveWebRTCCredentials(true); });
+    if (btnSaveCredentials) btnSaveCredentials.addEventListener("click", function () { saveWebRTCCredentials(false); });
     if (btnUnregister) btnUnregister.addEventListener("click", unregisterWebRTC);
     if (btnAudio) btnAudio.addEventListener("click", function () { callWebRTC("audio"); });
     if (btnVideo) btnVideo.addEventListener("click", function () { callWebRTC("video"); });
