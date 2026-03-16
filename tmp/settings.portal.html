@@ -4,10 +4,7 @@
 {% if message %}<p class="ok">{{ message }}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <div class="card narrow">
-  <h3>{% if force_password_change|default(false) %}Change Password (Required){% else %}Change Password (Optional){% endif %}</h3>
-  {% if force_password_change|default(false) %}
-  <p class="hint">First login detected. Change your password once, then this requirement will be removed.</p>
-  {% endif %}
+  <h3>Change Password (Optional)</h3>
   <form method="post" action="/settings/password">
     <label>Current Password</label>
     <input type="password" name="current_password" required />
