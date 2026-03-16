@@ -19,11 +19,10 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.websockets import WebSocketState
 import websockets
 
 from queue_platform import Agent, ContactCenterPlatform, QueueConfig, RoutingStrategy
@@ -42,7 +41,6 @@ FAX_FIXED_FROM_NUMBER = "6472585272"
 FAX_FIXED_FROM_NAME = "Ravi Kuru"
 WEBRTC_DEFAULT_EXTENSION = "4166287801"
 WEBRTC_DEFAULT_PASSWORD = "telcan2008!"
-WEBRTC_UI_BUILD = os.getenv("WEBRTC_UI_BUILD", "20260316b").strip() or "20260316b"
 # Default user-part for outbound WebRTC->external SIP From/Contact headers.
 # Override with env var WEBRTC_OUTBOUND_IDENTITY_DEFAULT if needed.
 WEBRTC_OUTBOUND_IDENTITY_DEFAULT = os.getenv("WEBRTC_OUTBOUND_IDENTITY_DEFAULT", "6472585272").strip()
@@ -50,7 +48,6 @@ WEBRTC_OUTBOUND_IDENTITY_DEFAULT = os.getenv("WEBRTC_OUTBOUND_IDENTITY_DEFAULT",
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
 DEFAULT_ADMIN_PASSWORD = os.getenv("CC_ADMIN_PASSWORD", "Lukshumi2008!")
-ALLOW_ALL_PORTAL_USERS = os.getenv("CC_ALLOW_ALL_PORTAL_USERS", "1").strip().lower() in {"1", "true", "yes", "on"}
 PROVISION_SIP_SERVER = os.getenv("PROVISION_SIP_SERVER", "").strip()
 try:
     PROVISION_SIP_PORT = int(os.getenv("PROVISION_SIP_PORT", "5060"))
@@ -727,15 +724,6 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS webrtc_user_credentials (
-                username TEXT PRIMARY KEY,
-                extension TEXT NOT NULL,
-                sip_password TEXT NOT NULL,
-                realm TEXT NOT NULL DEFAULT '',
-                transport TEXT NOT NULL DEFAULT 'ws',
-                updated_at TEXT NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS trunks (
                 name TEXT PRIMARY KEY,
                 proxy TEXT NOT NULL,
@@ -902,9 +890,6 @@ def init_db() -> None:
             conn.execute("ALTER TABLE whitelist_ips ADD COLUMN created_by TEXT NOT NULL DEFAULT ''")
         if whitelist_cols and "active" not in whitelist_cols:
             conn.execute("ALTER TABLE whitelist_ips ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
-        user_cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-        if "must_change_password" not in user_cols:
-            conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_created_at ON security_events(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip_address)")
@@ -917,12 +902,9 @@ def init_db() -> None:
             pw_hash = hash_password(DEFAULT_ADMIN_PASSWORD, salt)
             now = datetime.now(UTC).isoformat()
             conn.execute(
-                "INSERT INTO users(username, salt, password_hash, created_at, updated_at, must_change_password) VALUES(?,?,?,?,?,0)",
+                "INSERT INTO users(username, salt, password_hash, created_at, updated_at) VALUES(?,?,?,?,?)",
                 (DEFAULT_ADMIN_USER, salt, pw_hash, now, now),
             )
-        conn.execute("UPDATE users SET must_change_password = 0 WHERE username = ?", (DEFAULT_ADMIN_USER,))
-        # Password change is optional for all users.
-        conn.execute("UPDATE users SET must_change_password = 0")
         # Remove stale membership rows that reference missing agents/queues.
         conn.execute(
             "DELETE FROM agent_queue_memberships "
@@ -1277,8 +1259,6 @@ def require_admin_or_redirect(request: Request) -> tuple[str | None, RedirectRes
     if not user:
         log_security_event(request, "admin_access_no_session", severity="medium")
         return None, redirect_login()
-    if ALLOW_ALL_PORTAL_USERS:
-        return user, None
     if not is_admin_user(user):
         log_security_event(
             request,
@@ -1347,35 +1327,13 @@ def fs_cli(command: str) -> str:
 
 def infer_webrtc_realm() -> str:
     if PROVISION_SIP_SERVER:
-        candidate = sanitize_webrtc_realm(PROVISION_SIP_SERVER)
-        if candidate:
-            return candidate
+        return PROVISION_SIP_SERVER.split(":", 1)[0].strip()
     domain_lines = (fs_cli("global_getvar domain") or "").strip().splitlines()
     if domain_lines:
-        candidate = sanitize_webrtc_realm(domain_lines[0])
+        candidate = domain_lines[0].strip()
         if re.fullmatch(r"[A-Za-z0-9.-]+", candidate):
             return candidate
     return "204.29.213.58"
-
-
-def sanitize_webrtc_realm(value: str) -> str:
-    candidate = (value or "").strip()
-    if not candidate:
-        return ""
-    candidate = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", candidate)
-    lowered = candidate.lower()
-    if lowered.startswith("sip:") or lowered.startswith("sips:"):
-        candidate = candidate.split(":", 1)[1]
-    candidate = candidate.split("/", 1)[0].split(";", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if "@" in candidate:
-        candidate = candidate.rsplit("@", 1)[1]
-    if candidate.startswith("[") and "]" in candidate:
-        candidate = candidate[1 : candidate.index("]")]
-    elif candidate.count(":") == 1:
-        host, port = candidate.split(":", 1)
-        if port.isdigit():
-            candidate = host
-    return candidate.strip().lower()
 
 
 def unique_nonempty(items: list[str]) -> list[str]:
@@ -2122,9 +2080,7 @@ def shutdown() -> None:
 def root(request: Request):
     user = require_user(request)
     if user:
-        if is_admin_user(user) or ALLOW_ALL_PORTAL_USERS:
-            return RedirectResponse(url="/dashboard", status_code=303)
-        return redirect_settings()
+        return RedirectResponse(url="/dashboard", status_code=303) if is_admin_user(user) else redirect_settings()
     return RedirectResponse(url="/login", status_code=303)
 
 
@@ -2132,9 +2088,7 @@ def root(request: Request):
 def login_page(request: Request):
     user = require_user(request)
     if user:
-        if is_admin_user(user) or ALLOW_ALL_PORTAL_USERS:
-            return RedirectResponse(url="/dashboard", status_code=303)
-        return redirect_settings()
+        return RedirectResponse(url="/dashboard", status_code=303) if is_admin_user(user) else redirect_settings()
     return templates.TemplateResponse("login.html", {"request": request, "error": None})
 
 
@@ -2155,11 +2109,8 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
     candidate = hash_password(password, row["salt"])
     if secrets.compare_digest(candidate, row["password_hash"]):
         request.session["user"] = username
-        request.session.pop("force_password_change", None)
         log_security_event(request, "login_success", severity="info", username=username.strip())
-        if is_admin_user(username) or ALLOW_ALL_PORTAL_USERS:
-            return RedirectResponse(url="/dashboard", status_code=303)
-        return redirect_settings()
+        return RedirectResponse(url="/dashboard", status_code=303) if is_admin_user(username) else redirect_settings()
     log_security_event(
         request,
         "login_failed",
@@ -2258,152 +2209,39 @@ def webrtc_phone_page(request: Request):
         extensions = conn.execute(
             "SELECT extension, display_name FROM vpbx_extensions ORDER BY extension"
         ).fetchall()
-        saved = conn.execute(
-            """
-            SELECT extension, sip_password, realm, transport
-            FROM webrtc_user_credentials
-            WHERE username = ?
-            LIMIT 1
-            """,
-            (user,),
-        ).fetchone()
-    default_extension = WEBRTC_DEFAULT_EXTENSION
-    default_password = WEBRTC_DEFAULT_PASSWORD
-    default_realm = sip_host
-    default_transport = "ws"
-    if saved is not None:
-        if (saved["extension"] or "").strip():
-            default_extension = str(saved["extension"]).strip()
-        if (saved["sip_password"] or "").strip():
-            default_password = str(saved["sip_password"]).strip()
-        if (saved["realm"] or "").strip():
-            default_realm = sanitize_webrtc_realm(str(saved["realm"]).strip()) or sip_host
-        if str(saved["transport"] or "").strip().lower() == "wss":
-            default_transport = "wss"
     public_base_url = request_public_base_url(request)
     public_host_port = public_base_url.split("://", 1)[1] if "://" in public_base_url else (request.headers.get("host") or sip_host)
     webrtc_ws_url = f"ws://{public_host_port}/webrtc/ws"
     webrtc_wss_url = f"wss://{public_host_port}/webrtc/ws"
-    response = templates.TemplateResponse(
+    return templates.TemplateResponse(
         "webrtcphone.html",
         {
             "request": request,
             "user": user,
-            "webrtc_realm": default_realm,
+            "webrtc_realm": sip_host,
             # Use portal WebSocket proxy by default so clients can register even when
             # direct FreeSWITCH WS/WSS ports are filtered by upstream firewalls.
             "webrtc_wss_url": webrtc_wss_url,
             "webrtc_ws_url": webrtc_ws_url,
             "webrtc_extensions": extensions,
-            "webrtc_default_extension": default_extension,
-            "webrtc_default_password": default_password,
-            "webrtc_default_transport": default_transport,
-            "webrtc_build": WEBRTC_UI_BUILD,
+            "webrtc_default_extension": WEBRTC_DEFAULT_EXTENSION,
+            "webrtc_default_password": WEBRTC_DEFAULT_PASSWORD,
         },
-    )
-    # Prevent stale browser cache from serving old WebRTC JS behavior.
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
-
-
-@app.post("/webrtcphone/credentials")
-def save_webrtc_credentials(
-    request: Request,
-    extension: str = Form(...),
-    sip_password: str = Form(...),
-    realm: str = Form(""),
-    transport: str = Form("ws"),
-):
-    user = require_user(request)
-    if not user:
-        return JSONResponse(
-            {"ok": False, "error": "Unauthorized"},
-            status_code=401,
-        )
-
-    ext_value = (extension or "").strip()
-    pw_value = (sip_password or "").strip()
-    realm_value = sanitize_webrtc_realm((realm or "").strip()) or infer_webrtc_realm()
-    transport_value = (transport or "ws").strip().lower()
-    if transport_value not in {"ws", "wss"}:
-        transport_value = "ws"
-    if not ext_value:
-        return JSONResponse({"ok": False, "error": "Extension is required."}, status_code=400)
-    if not pw_value:
-        return JSONResponse({"ok": False, "error": "Password is required."}, status_code=400)
-    if not re.fullmatch(r"[0-9A-Za-z_.-]{2,64}", ext_value):
-        return JSONResponse({"ok": False, "error": "Extension format is invalid."}, status_code=400)
-    if not re.fullmatch(r"[0-9A-Za-z.-]+", realm_value):
-        return JSONResponse({"ok": False, "error": "Realm/domain format is invalid."}, status_code=400)
-
-    now_iso = datetime.now(UTC).isoformat()
-    with closing(db_conn()) as conn:
-        conn.execute(
-            """
-            INSERT INTO webrtc_user_credentials(username, extension, sip_password, realm, transport, updated_at)
-            VALUES(?,?,?,?,?,?)
-            ON CONFLICT(username) DO UPDATE SET
-                extension=excluded.extension,
-                sip_password=excluded.sip_password,
-                realm=excluded.realm,
-                transport=excluded.transport,
-                updated_at=excluded.updated_at
-            """,
-            (str(user), ext_value, pw_value, realm_value, transport_value, now_iso),
-        )
-        existing_ext = conn.execute(
-            "SELECT extension, display_name, context FROM vpbx_extensions WHERE extension = ?",
-            (ext_value,),
-        ).fetchone()
-        if existing_ext is None:
-            display_name = f"WebRTC {ext_value}"
-            context = "default"
-            conn.execute(
-                """
-                INSERT INTO vpbx_extensions(extension, display_name, sip_password, voicemail_enabled, context, created_at)
-                VALUES(?,?,?,?,?,?)
-                """,
-                (ext_value, display_name, pw_value, 1, context, now_iso),
-            )
-        else:
-            display_name = str(existing_ext["display_name"] or f"WebRTC {ext_value}").strip() or f"WebRTC {ext_value}"
-            context = str(existing_ext["context"] or "default").strip() or "default"
-            conn.execute(
-                "UPDATE vpbx_extensions SET sip_password = ? WHERE extension = ?",
-                (pw_value, ext_value),
-            )
-        conn.commit()
-
-    sync_extension_to_freeswitch(ext_value, display_name, pw_value, context)
-    fs_cli("reloadxml")
-    return JSONResponse(
-        {
-            "ok": True,
-            "message": f"Saved WebRTC credentials for {ext_value}. Extension synced to FreeSWITCH.",
-            "extension": ext_value,
-            "realm": realm_value,
-            "transport": transport_value,
-        }
     )
 
 
 @app.websocket("/webrtc/ws")
 async def webrtc_ws_proxy(websocket: WebSocket):
     session = websocket.scope.get("session") or {}
-    if not session.get("user"):
+    if session.get("user") != DEFAULT_ADMIN_USER:
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
-    proxy_id = secrets.token_hex(4)
     await websocket.accept(subprotocol="sip")
-    print(f"WebRTC proxy[{proxy_id}] accepted client={websocket.client} host={websocket.url.hostname}")
     upstream_hosts = unique_nonempty(
         [
-            websocket.url.hostname or "",
             infer_webrtc_realm(),
-            "204.29.213.58",
+            websocket.url.hostname or "",
             "127.0.0.1",
             "localhost",
         ]
@@ -2416,97 +2254,53 @@ async def webrtc_ws_proxy(websocket: WebSocket):
                 upstream = await websockets.connect(
                     f"ws://{host}:5066",
                     subprotocols=["sip"],
-                    ping_interval=30,
-                    ping_timeout=30,
-                    open_timeout=2,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    open_timeout=4,
                     close_timeout=2,
                 )
-                print(f"WebRTC proxy[{proxy_id}] upstream connected host={host}")
                 break
             except Exception as exc:
                 last_error = exc
         if upstream is None:
-            print(f"WebRTC proxy[{proxy_id}] upstream unavailable hosts={upstream_hosts} last_error={last_error}")
+            print(f"WebRTC proxy upstream unavailable hosts={upstream_hosts} last_error={last_error}")
             await websocket.close(code=1011, reason="Upstream WS unavailable")
             return
 
         async def client_to_upstream():
-            forwarded = 0
-            try:
-                while True:
-                    message = await websocket.receive()
-                    msg_type = message.get("type")
-                    if msg_type == "websocket.disconnect":
-                        print(f"WebRTC proxy[{proxy_id}] client disconnected")
-                        break
-                    if message.get("text") is not None:
-                        if forwarded < 2:
-                            first_line = (message["text"] or "").splitlines()[0] if message["text"] else ""
-                            print(f"WebRTC proxy[{proxy_id}] c->u text: {first_line[:120]}")
-                        forwarded += 1
-                        await upstream.send(message["text"])
-                    elif message.get("bytes") is not None:
-                        if forwarded < 2:
-                            print(f"WebRTC proxy[{proxy_id}] c->u bytes: {len(message['bytes'])}")
-                        forwarded += 1
-                        await upstream.send(message["bytes"])
-            except WebSocketDisconnect:
-                pass
-            except websockets.exceptions.ConnectionClosed:
-                pass
+            while True:
+                message = await websocket.receive()
+                msg_type = message.get("type")
+                if msg_type == "websocket.disconnect":
+                    break
+                if message.get("text") is not None:
+                    await upstream.send(message["text"])
+                elif message.get("bytes") is not None:
+                    await upstream.send(message["bytes"])
 
         async def upstream_to_client():
-            relayed = 0
-            try:
-                while True:
-                    incoming = await upstream.recv()
-                    if relayed < 2:
-                        if isinstance(incoming, bytes):
-                            print(f"WebRTC proxy[{proxy_id}] u->c bytes: {len(incoming)}")
-                        else:
-                            first_line = (incoming or "").splitlines()[0] if incoming else ""
-                            print(f"WebRTC proxy[{proxy_id}] u->c text: {first_line[:120]}")
-                    relayed += 1
-                    if isinstance(incoming, bytes):
-                        await websocket.send_bytes(incoming)
-                    else:
-                        await websocket.send_text(incoming)
-            except websockets.exceptions.ConnectionClosed:
-                pass
-            except RuntimeError:
-                # Avoid noisy "websocket.send after websocket.close" races.
-                pass
+            while True:
+                incoming = await upstream.recv()
+                if isinstance(incoming, bytes):
+                    await websocket.send_bytes(incoming)
+                else:
+                    await websocket.send_text(incoming)
 
-        client_task = asyncio.create_task(client_to_upstream())
-        upstream_task = asyncio.create_task(upstream_to_client())
-        done, pending = await asyncio.wait(
-            {client_task, upstream_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            exc = task.exception()
-            if exc is not None:
-                raise exc
+        await asyncio.gather(client_to_upstream(), upstream_to_client())
     except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
         pass
     except Exception as exc:
-        print(f"WebRTC proxy[{proxy_id}] runtime error: {exc}")
+        print(f"WebRTC proxy runtime error: {exc}")
     finally:
         if upstream is not None:
             try:
                 await upstream.close()
             except Exception:
                 pass
-        if websocket.client_state != WebSocketState.DISCONNECTED:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
-        print(f"WebRTC proxy[{proxy_id}] closed")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.get("/queues", response_class=HTMLResponse)
@@ -5431,7 +5225,6 @@ def settings_page(request: Request):
     user = require_user(request)
     if not user:
         return redirect_login()
-    request.session.pop("force_password_change", None)
     with closing(db_conn()) as conn:
         if is_admin_user(user):
             users = conn.execute("SELECT username, created_at, updated_at FROM users ORDER BY username").fetchall()
@@ -5449,7 +5242,6 @@ def settings_page(request: Request):
             "error": None,
             "users": users,
             "can_manage_users": is_admin_user(user),
-            "force_password_change": False,
         },
     )
 
@@ -5483,7 +5275,6 @@ def change_password(
                 "error": "New password mismatch",
                 "users": users,
                 "can_manage_users": is_admin_user(user),
-                "force_password_change": False,
             },
         )
 
@@ -5499,7 +5290,6 @@ def change_password(
                     "error": "User not found",
                     "users": users,
                     "can_manage_users": is_admin_user(user),
-                    "force_password_change": False,
                 },
             )
         current_hash = hash_password(current_password, row["salt"])
@@ -5513,17 +5303,15 @@ def change_password(
                     "error": "Current password invalid",
                     "users": users,
                     "can_manage_users": is_admin_user(user),
-                    "force_password_change": False,
                 },
             )
         new_salt = secrets.token_hex(16)
         new_hash = hash_password(new_password, new_salt)
         conn.execute(
-            "UPDATE users SET salt = ?, password_hash = ?, updated_at = ?, must_change_password = 0 WHERE username = ?",
+            "UPDATE users SET salt = ?, password_hash = ?, updated_at = ? WHERE username = ?",
             (new_salt, new_hash, datetime.now(UTC).isoformat(), user),
         )
         conn.commit()
-    request.session.pop("force_password_change", None)
 
     with closing(db_conn()) as conn:
         if is_admin_user(user):
@@ -5542,7 +5330,6 @@ def change_password(
             "error": None,
             "users": users,
             "can_manage_users": is_admin_user(user),
-            "force_password_change": False,
         },
     )
 
@@ -5637,7 +5424,7 @@ def create_user_account(
         pw_hash = hash_password(password, salt)
         now = datetime.now(UTC).isoformat()
         conn.execute(
-            "INSERT INTO users(username, salt, password_hash, created_at, updated_at, must_change_password) VALUES(?,?,?,?,?,0)",
+            "INSERT INTO users(username, salt, password_hash, created_at, updated_at) VALUES(?,?,?,?,?)",
             (username_norm, salt, pw_hash, now, now),
         )
         conn.commit()

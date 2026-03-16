@@ -50,8 +50,8 @@
     </label>
     <label>Transport
       <select id="webrtc-transport">
-        <option value="ws" {% if webrtc_default_transport != "wss" %}selected{% endif %}>ws (fast test mode)</option>
-        <option value="wss" {% if webrtc_default_transport == "wss" %}selected{% endif %}>wss (requires trusted TLS cert)</option>
+        <option value="ws" selected>ws (fast test mode)</option>
+        <option value="wss">wss (requires trusted TLS cert)</option>
       </select>
     </label>
     <label>WSS URL
@@ -71,9 +71,8 @@
     </label>
     <div style="display:flex; gap:8px; align-items:end;">
       <button id="webrtc-register-btn" type="button">Register</button>
-      <button id="webrtc-save-credentials-btn" type="button">Save Credentials</button>
       <button id="webrtc-unregister-btn" type="button">Unregister</button>
-      <button id="webrtc-audio-call-btn" type="button">Audio Call</button>
+      <button id="webrtc-audio-call-btn" type="button">Call Audio</button>
       <button id="webrtc-video-call-btn" type="button">Call Video</button>
       <button id="webrtc-hangup-btn" type="button">Hangup</button>
     </div>
@@ -114,15 +113,12 @@
   <pre id="webrtc-log">Ready.</pre>
 </div>
 
-<script src="/static/sip.min.js?v={{ webrtc_build }}"></script>
+<script src="/static/sip.min.js?v=1"></script>
 <script>
   let userAgent = null;
   let registerer = null;
   let activeSession = null;
   let localStream = null;
-  let audioDialingStartedAt = 0;
-  let audioAnswered = false;
-  let registrationReady = false;
 
   function logWebRTC(msg) {
     const box = document.getElementById("webrtc-log");
@@ -144,94 +140,10 @@
     return el ? (el.value || "").trim() : "";
   }
 
-  function normalizeRealm(rawRealm) {
-    let realm = (rawRealm || "").trim();
-    if (!realm) return "";
-    realm = realm.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
-    if (/^sips?:/i.test(realm)) {
-      realm = realm.split(":", 2)[1] || "";
-    }
-    realm = realm.split("/", 1)[0].split(";", 1)[0].split("?", 1)[0].split("#", 1)[0];
-    if (realm.includes("@")) {
-      realm = realm.split("@").pop() || "";
-    }
-    if (realm.startsWith("[") && realm.includes("]")) {
-      realm = realm.slice(1, realm.indexOf("]"));
-    } else {
-      const parts = realm.split(":");
-      if (parts.length === 2 && /^[0-9]+$/.test(parts[1])) {
-        realm = parts[0];
-      }
-    }
-    return realm.trim().toLowerCase();
-  }
-
-  function canonicalProxyWsUrl(transport) {
-    const host = window.location.host;
-    if (!host) return "";
-    return `${transport === "wss" ? "wss" : "ws"}://${host}/webrtc/ws`;
-  }
-
-  function sipStatusCode(messageLike) {
-    return (
-      (messageLike && messageLike.message && messageLike.message.statusCode) ||
-      (messageLike && messageLike.statusCode) ||
-      null
-    );
-  }
-
-  function sipReasonPhrase(messageLike) {
-    return (
-      (messageLike && messageLike.message && messageLike.message.reasonPhrase) ||
-      (messageLike && messageLike.reasonPhrase) ||
-      ""
-    );
-  }
-
   function useExtension(ext) {
     const input = document.getElementById("webrtc-extension");
     if (input) input.value = ext || "";
     if (input) input.focus();
-  }
-
-  function setAudioCallButton(text) {
-    const btn = document.getElementById("webrtc-audio-call-btn");
-    if (!btn) return;
-    btn.textContent = text;
-    if (text === "Dialing") {
-      audioDialingStartedAt = Date.now();
-      audioAnswered = false;
-    } else if (text === "Answered") {
-      audioAnswered = true;
-    }
-  }
-
-  function resetAudioCallButton() {
-    setAudioCallButton("Audio Call");
-  }
-
-  function resetAudioCallButtonAfterMinDialing(minMs) {
-    if (audioAnswered || !audioDialingStartedAt) {
-      resetAudioCallButton();
-      return;
-    }
-    const elapsed = Date.now() - audioDialingStartedAt;
-    const wait = Math.max(0, (minMs || 0) - elapsed);
-    window.setTimeout(resetAudioCallButton, wait);
-  }
-
-  async function waitForRegistrationReady(timeoutMs) {
-    if (registrationReady) {
-      return true;
-    }
-    const deadline = Date.now() + Math.max(0, timeoutMs || 0);
-    while (Date.now() < deadline) {
-      if (registrationReady) {
-        return true;
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 150));
-    }
-    return registrationReady;
   }
 
   function buildTargetUri(rawTarget, realm) {
@@ -260,104 +172,18 @@
       if (!body) return "";
       const at = body.lastIndexOf("@");
       if (at === -1) return (realm || "").trim();
-      let hostPart = body.slice(at + 1).trim();
-      hostPart = hostPart.split(";", 1)[0].split("?", 1)[0].trim();
-      if (hostPart.startsWith("[") && hostPart.includes("]")) {
-        hostPart = hostPart.slice(1, hostPart.indexOf("]"));
-      } else if (hostPart.includes(":")) {
-        hostPart = hostPart.split(":", 1)[0];
-      }
-      return hostPart;
-    }
-    const plain = target.split("@", 2);
-    if (plain.length === 2) {
-      return targetHostFromInput(`sip:${target}`, realm);
+      return body.slice(at + 1).trim();
     }
     return (realm || "").trim();
-  }
-
-  async function saveWebRTCCredentials(registerAfterSave = false) {
-    try {
-      const extension = val("webrtc-extension");
-      const sipPassword = val("webrtc-password");
-      const realmInput = val("webrtc-realm");
-      const realm = normalizeRealm(realmInput);
-      const transport = val("webrtc-transport");
-      const wsUrlInputEl = document.getElementById("webrtc-ws-url");
-      const wssUrlInputEl = document.getElementById("webrtc-wss-url");
-      const canonicalWs = canonicalProxyWsUrl("ws");
-      const canonicalWss = canonicalProxyWsUrl("wss");
-      if (wsUrlInputEl && canonicalWs) wsUrlInputEl.value = canonicalWs;
-      if (wssUrlInputEl && canonicalWss) wssUrlInputEl.value = canonicalWss;
-      if (!extension || !sipPassword || !realm) {
-        logWebRTC("Cannot save: extension, password, and realm are required.");
-        return false;
-      }
-      if (realm !== realmInput) {
-        const realmInputEl = document.getElementById("webrtc-realm");
-        if (realmInputEl) realmInputEl.value = realm;
-        logWebRTC(`Realm normalized to ${realm} for SIP registration.`);
-      }
-      const body = new URLSearchParams();
-      body.set("extension", extension);
-      body.set("sip_password", sipPassword);
-      body.set("realm", realm);
-      body.set("transport", transport || "ws");
-      const resp = await fetch("/webrtcphone/credentials", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-        body: body.toString(),
-      });
-      let payload = null;
-      try {
-        payload = await resp.json();
-      } catch (parseErr) {
-        payload = null;
-      }
-      if (!resp.ok || !payload || !payload.ok) {
-        const msg = (payload && payload.error) ? payload.error : `HTTP ${resp.status}`;
-        logWebRTC(`Save credentials failed: ${msg}`);
-        return false;
-      }
-      logWebRTC(payload.message || `Saved credentials for ${extension}.`);
-      if (registerAfterSave) {
-        await registerWebRTC(true);
-      }
-      return true;
-    } catch (err) {
-      logWebRTC(`Save credentials error: ${err}`);
-      return false;
-    }
   }
 
   function mediaConstraints(mode) {
     return { audio: true, video: mode === "video" };
   }
 
-  function fallbackMediaConstraints() {
-    return { audio: false, video: false };
-  }
-
-  function fallbackOfferOptions(mode) {
-    return {
-      offerToReceiveAudio: true,
-      offerToReceiveVideo: mode === "video",
-    };
-  }
-
-  async function microphonePermissionState() {
-    try {
-      if (!navigator.permissions || !navigator.permissions.query) return "unknown";
-      const status = await navigator.permissions.query({ name: "microphone" });
-      return (status && status.state) ? status.state : "unknown";
-    } catch (_err) {
-      return "unknown";
-    }
-  }
-
   async function ensureLocalMedia(mode) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      logWebRTC("Browser media API not available (likely insecure context).");
+      logWebRTC("Browser media API not available.");
       return null;
     }
     if (localStream) {
@@ -421,35 +247,12 @@
     tryPlay(remoteVideo);
   }
 
-  function bindSessionState(session, label, mode) {
+  function bindSessionState(session, label) {
     if (!session || !session.stateChange) {
       return;
     }
     session.stateChange.addListener((state) => {
       logWebRTC(`${label} state: ${state}`);
-      const stateText = String(state || "");
-      if (label === "outgoing" && mode === "audio") {
-        if (
-          state === SIP.SessionState.Initial ||
-          state === SIP.SessionState.Establishing ||
-          stateText.includes("Initial") ||
-          stateText.includes("Establishing")
-        ) {
-          setAudioCallButton("Dialing");
-        } else if (
-          state === SIP.SessionState.Established ||
-          stateText.includes("Established")
-        ) {
-          setAudioCallButton("Answered");
-        } else if (
-          state === SIP.SessionState.Terminating ||
-          state === SIP.SessionState.Terminated ||
-          stateText.includes("Terminating") ||
-          stateText.includes("Terminated")
-        ) {
-          resetAudioCallButtonAfterMinDialing(5000);
-        }
-      }
       attachSessionMedia(session);
     });
   }
@@ -462,45 +265,19 @@
       }
       const extension = val("webrtc-extension");
       const password = val("webrtc-password");
-      const realmInput = val("webrtc-realm");
-      const realm = normalizeRealm(realmInput);
+      const realm = val("webrtc-realm");
       const transport = val("webrtc-transport");
-      const wsUrlInputEl = document.getElementById("webrtc-ws-url");
-      const wssUrlInputEl = document.getElementById("webrtc-wss-url");
-      const canonicalWs = canonicalProxyWsUrl("ws");
-      const canonicalWss = canonicalProxyWsUrl("wss");
-      if (wsUrlInputEl && canonicalWs) wsUrlInputEl.value = canonicalWs;
-      if (wssUrlInputEl && canonicalWss) wssUrlInputEl.value = canonicalWss;
-      const server = transport === "ws" ? (canonicalWs || val("webrtc-ws-url")) : (canonicalWss || val("webrtc-wss-url"));
+      const server = transport === "ws" ? val("webrtc-ws-url") : val("webrtc-wss-url");
       if (!extension || !password || !realm || !server) {
         logWebRTC("Extension, password, realm, and transport URL are required.");
         setRegisterStatus("Missing Fields", "webrtc-status-error");
         return;
       }
-      if (realm !== realmInput) {
-        const realmInputEl = document.getElementById("webrtc-realm");
-        if (realmInputEl) realmInputEl.value = realm;
-        logWebRTC(`Realm normalized to ${realm} for SIP registration.`);
-      }
       if (userAgent) {
-        if (registrationReady) {
-          logWebRTC("Already registered.");
-          return;
-        }
-        // Recover from stale SIP.js state (common after transport/TLS changes).
-        logWebRTC("Existing SIP session appears stale. Reinitializing registration...");
-        try {
-          if (registerer) await registerer.unregister();
-        } catch (_err) {}
-        try {
-          await userAgent.stop();
-        } catch (_err) {}
-        userAgent = null;
-        registerer = null;
-        registrationReady = false;
+        logWebRTC("Already registered or connecting.");
+        return;
       }
       setRegisterStatus("Connecting...", "webrtc-status-connecting");
-      registrationReady = false;
       const uri = SIP.UserAgent.makeURI(`sip:${extension}@${realm}`);
       if (!uri) {
         logWebRTC("Invalid SIP URI for extension/realm.");
@@ -519,9 +296,9 @@
       userAgent.delegate = {
         onInvite: async (invitation) => {
           activeSession = invitation;
-          const preferredMode = val("webrtc-call-type") || "audio";
-          bindSessionState(invitation, "incoming", preferredMode === "video" ? "video" : "audio");
+          bindSessionState(invitation, "incoming");
           logWebRTC("Incoming call received.");
+          const preferredMode = val("webrtc-call-type") || "audio";
           try {
             await ensureLocalMedia(preferredMode === "video" ? "video" : "audio");
           } catch (mediaErr) {
@@ -543,40 +320,14 @@
         logWebRTC(`Register state: ${state}`);
         const stateText = String(state || "");
         if (stateText.includes("Registered")) {
-          registrationReady = true;
           setRegisterStatus("Registered", "webrtc-status-online");
         } else if (stateText.includes("Unregistered")) {
-          registrationReady = false;
           setRegisterStatus("Not Registered", "webrtc-status-offline");
         } else if (stateText.includes("Terminated")) {
-          registrationReady = false;
           setRegisterStatus("Registration Ended", "webrtc-status-offline");
         }
       });
-      if (userAgent && userAgent.transport && userAgent.transport.stateChange) {
-        userAgent.transport.stateChange.addListener((state) => {
-          logWebRTC(`Transport state: ${state}`);
-        });
-      }
-      await registerer.register({
-        requestDelegate: {
-          onAccept: (response) => {
-            const code = sipStatusCode(response) || 200;
-            logWebRTC(`REGISTER accepted (${code}).`);
-          },
-          onReject: (response) => {
-            const code = sipStatusCode(response) || "unknown";
-            const reason = sipReasonPhrase(response);
-            logWebRTC(`REGISTER rejected (${code}${reason ? ` ${reason}` : ""}).`);
-            registrationReady = false;
-            if (code === 401 || code === 403) {
-              setRegisterStatus("Auth Failed", "webrtc-status-error");
-            } else {
-              setRegisterStatus(`Register ${code}`, "webrtc-status-error");
-            }
-          },
-        },
-      });
+      await registerer.register();
       logWebRTC(`Register request sent for ${extension}@${realm} via ${server}`);
     } catch (err) {
       logWebRTC(`Register failed: ${err}`);
@@ -595,7 +346,6 @@
       }
       userAgent = null;
       registerer = null;
-      registrationReady = false;
     }
   }
 
@@ -614,8 +364,6 @@
       userAgent = null;
       registerer = null;
       activeSession = null;
-      registrationReady = false;
-      resetAudioCallButton();
       logWebRTC("Unregistered and disconnected.");
       setRegisterStatus("Not Registered", "webrtc-status-offline");
     } catch (err) {
@@ -626,72 +374,35 @@
 
   async function callWebRTC(mode) {
     try {
-      if (mode === "audio") {
-        setAudioCallButton("Dialing");
-      }
       if (!userAgent) {
-        logWebRTC("Not registered. Auto-registering before call...");
-        await registerWebRTC(true);
-        if (!userAgent) {
-          logWebRTC("Auto-register failed. Please click Register and retry.");
-          resetAudioCallButton();
-          return;
-        }
-      }
-      if (!registrationReady) {
-        logWebRTC("Waiting for registration to complete before dialing...");
-        const ready = await waitForRegistrationReady(6000);
-        if (!ready) {
-          logWebRTC("Registration is not ready yet. Please wait for green Registered status, then retry.");
-          resetAudioCallButtonAfterMinDialing(2500);
-          return;
-        }
+        logWebRTC("Register first.");
+        return;
       }
       const target = val("webrtc-target");
-      const realm = normalizeRealm(val("webrtc-realm"));
+      const realm = val("webrtc-realm");
       const targetUri = buildTargetUri(target, realm);
       if (!targetUri) {
         logWebRTC("Destination is required.");
-        resetAudioCallButton();
         return;
       }
       const targetHost = targetHostFromInput(target, realm);
-      logWebRTC(`Preparing call target=${targetUri.toString()} host=${targetHost || "(none)"}`);
       let stream = null;
-      let constraints = mediaConstraints(mode);
-      let offerOptions = undefined;
       try {
         stream = await ensureLocalMedia(mode);
-        if (!stream || !stream.getAudioTracks || stream.getAudioTracks().length === 0) {
-          if (mode === "audio") {
-            const micState = await microphonePermissionState();
-            logWebRTC(`No microphone audio track (permission=${micState}, secure=${window.isSecureContext ? "yes" : "no"}). Falling back to receive-only audio.`);
-          }
-          logWebRTC("No microphone audio track available. Placing receive-only fallback call.");
-          constraints = fallbackMediaConstraints();
-          offerOptions = fallbackOfferOptions(mode);
-        }
       } catch (mediaErr) {
-        const name = (mediaErr && mediaErr.name) ? mediaErr.name : "MediaError";
-        logWebRTC(`Microphone error: ${name} ${mediaErr || ""}`.trim());
-        if (mode === "audio") {
-          const micState = await microphonePermissionState();
-          logWebRTC(`Microphone unavailable (permission=${micState}, secure=${window.isSecureContext ? "yes" : "no"}). Falling back to receive-only audio.`);
-        }
-        logWebRTC("Placing receive-only fallback call (remote can be heard; mic uplink unavailable).");
-        constraints = fallbackMediaConstraints();
-        offerOptions = fallbackOfferOptions(mode);
+        logWebRTC(`Media open warning: ${mediaErr}`);
+        logWebRTC("Microphone unavailable. Enable HTTPS + mic permission.");
+        return;
       }
       const inviter = new SIP.Inviter(userAgent, targetUri, {
         extraHeaders: targetHost ? [`X-Callture-Target-Host: ${targetHost}`] : [],
         sessionDescriptionHandlerOptions: {
-          constraints,
-          offerOptions,
+          constraints: mediaConstraints(mode),
           localMediaStream: stream || undefined,
         },
       });
       activeSession = inviter;
-      bindSessionState(inviter, "outgoing", mode);
+      bindSessionState(inviter, "outgoing");
       await inviter.invite();
       if (targetHost) {
         logWebRTC(`Target host header: ${targetHost}`);
@@ -699,7 +410,6 @@
       logWebRTC(`Calling ${targetUri.toString()} (${mode})`);
     } catch (err) {
       logWebRTC(`Call failed: ${err}`);
-      resetAudioCallButtonAfterMinDialing(5000);
     }
   }
 
@@ -723,57 +433,27 @@
       }
       const localVideo = document.getElementById("local-video");
       if (localVideo) localVideo.srcObject = null;
-      resetAudioCallButton();
       logWebRTC("Hangup sent.");
     } catch (err) {
       logWebRTC(`Hangup error: ${err}`);
-      resetAudioCallButton();
     }
   }
 
   document.addEventListener("DOMContentLoaded", function () {
     logWebRTC(window.SIP ? "SIP.js loaded." : "SIP.js not loaded.");
-    logWebRTC("WebRTC UI build: {{ webrtc_build }}");
     logWebRTC("WebRTC page ready. Click Register.");
-    logWebRTC(`Page context: protocol=${window.location.protocol} secure=${window.isSecureContext ? "yes" : "no"}`);
     setRegisterStatus("Not Registered", "webrtc-status-offline");
     const transportSelect = document.getElementById("webrtc-transport");
     if (transportSelect && window.location.protocol === "https:") {
       transportSelect.value = "wss";
       logWebRTC("HTTPS detected: using wss transport.");
     }
-    const wsUrlInputEl = document.getElementById("webrtc-ws-url");
-    const wssUrlInputEl = document.getElementById("webrtc-wss-url");
-    const canonicalWs = canonicalProxyWsUrl("ws");
-    const canonicalWss = canonicalProxyWsUrl("wss");
-    if (wsUrlInputEl && canonicalWs) {
-      if ((wsUrlInputEl.value || "").trim() !== canonicalWs) {
-        wsUrlInputEl.value = canonicalWs;
-        logWebRTC(`WS URL normalized to ${canonicalWs}.`);
-      }
-    }
-    if (wssUrlInputEl && canonicalWss) {
-      if ((wssUrlInputEl.value || "").trim() !== canonicalWss) {
-        wssUrlInputEl.value = canonicalWss;
-        logWebRTC(`WSS URL normalized to ${canonicalWss}.`);
-      }
-    }
-    const realmInput = document.getElementById("webrtc-realm");
-    if (realmInput) {
-      const normalized = normalizeRealm(realmInput.value || "");
-      if (normalized && normalized !== (realmInput.value || "").trim()) {
-        realmInput.value = normalized;
-        logWebRTC(`Realm normalized to ${normalized}.`);
-      }
-    }
     const btnRegister = document.getElementById("webrtc-register-btn");
-    const btnSaveCredentials = document.getElementById("webrtc-save-credentials-btn");
     const btnUnregister = document.getElementById("webrtc-unregister-btn");
     const btnAudio = document.getElementById("webrtc-audio-call-btn");
     const btnVideo = document.getElementById("webrtc-video-call-btn");
     const btnHangup = document.getElementById("webrtc-hangup-btn");
-    if (btnRegister) btnRegister.addEventListener("click", function () { saveWebRTCCredentials(true); });
-    if (btnSaveCredentials) btnSaveCredentials.addEventListener("click", function () { saveWebRTCCredentials(false); });
+    if (btnRegister) btnRegister.addEventListener("click", function () { registerWebRTC(true); });
     if (btnUnregister) btnUnregister.addEventListener("click", unregisterWebRTC);
     if (btnAudio) btnAudio.addEventListener("click", function () { callWebRTC("audio"); });
     if (btnVideo) btnVideo.addEventListener("click", function () { callWebRTC("video"); });
