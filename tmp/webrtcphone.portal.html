@@ -220,20 +220,9 @@
     return { audio: true, video: mode === "video" };
   }
 
-  function fallbackMediaConstraints() {
-    return { audio: false, video: false };
-  }
-
-  function fallbackOfferOptions(mode) {
-    return {
-      offerToReceiveAudio: true,
-      offerToReceiveVideo: mode === "video",
-    };
-  }
-
   async function ensureLocalMedia(mode) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      logWebRTC("Browser media API not available.");
+      logWebRTC("Browser media API not available (likely insecure context).");
       return null;
     }
     if (localStream) {
@@ -471,27 +460,28 @@
       const targetHost = targetHostFromInput(target, realm);
       logWebRTC(`Preparing call target=${targetUri.toString()} host=${targetHost || "(none)"}`);
       let stream = null;
-      let constraints = mediaConstraints(mode);
-      let offerOptions = undefined;
       try {
         stream = await ensureLocalMedia(mode);
-        if (!stream) {
-          logWebRTC("Media unavailable: using receive-only fallback to place call.");
-          constraints = fallbackMediaConstraints();
-          offerOptions = fallbackOfferOptions(mode);
-        }
       } catch (mediaErr) {
-        logWebRTC(`Media open warning: ${mediaErr}`);
-        logWebRTC("Mic unavailable: sending call in receive-only fallback mode.");
-        constraints = fallbackMediaConstraints();
-        offerOptions = fallbackOfferOptions(mode);
+        const name = (mediaErr && mediaErr.name) ? mediaErr.name : "MediaError";
+        logWebRTC(`Microphone error: ${name} ${mediaErr || ""}`.trim());
+        logWebRTC("Cannot place two-way audio call without microphone access.");
+        logWebRTC("Use HTTPS (or http://localhost via SSH tunnel) and allow mic permission.");
+        resetAudioCallButtonAfterMinDialing(1200);
+        return;
+      }
+      if (!stream || !stream.getAudioTracks || stream.getAudioTracks().length === 0) {
+        logWebRTC("No microphone audio track available.");
+        logWebRTC("Cannot place two-way audio call without microphone access.");
+        logWebRTC("Use HTTPS (or http://localhost via SSH tunnel) and allow mic permission.");
+        resetAudioCallButtonAfterMinDialing(1200);
+        return;
       }
       const inviter = new SIP.Inviter(userAgent, targetUri, {
         extraHeaders: targetHost ? [`X-Callture-Target-Host: ${targetHost}`] : [],
         sessionDescriptionHandlerOptions: {
-          constraints,
-          offerOptions,
-          localMediaStream: stream || undefined,
+          constraints: mediaConstraints(mode),
+          localMediaStream: stream,
         },
       });
       activeSession = inviter;
@@ -538,6 +528,7 @@
   document.addEventListener("DOMContentLoaded", function () {
     logWebRTC(window.SIP ? "SIP.js loaded." : "SIP.js not loaded.");
     logWebRTC("WebRTC page ready. Click Register.");
+    logWebRTC(`Page context: protocol=${window.location.protocol} secure=${window.isSecureContext ? "yes" : "no"}`);
     setRegisterStatus("Not Registered", "webrtc-status-offline");
     const transportSelect = document.getElementById("webrtc-transport");
     if (transportSelect && window.location.protocol === "https:") {
