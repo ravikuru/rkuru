@@ -158,7 +158,23 @@
       }
       return SIP.UserAgent.makeURI(target);
     }
+    if (target.includes("@")) {
+      return SIP.UserAgent.makeURI(`sip:${target}`);
+    }
     return SIP.UserAgent.makeURI(`sip:${target}@${realm}`);
+  }
+
+  function targetHostFromInput(rawTarget, realm) {
+    const target = (rawTarget || "").trim();
+    if (!target) return "";
+    if (target.toLowerCase().startsWith("sip:")) {
+      const body = target.slice(4).trim();
+      if (!body) return "";
+      const at = body.lastIndexOf("@");
+      if (at === -1) return (realm || "").trim();
+      return body.slice(at + 1).trim();
+    }
+    return (realm || "").trim();
   }
 
   function mediaConstraints(mode) {
@@ -369,6 +385,7 @@
         logWebRTC("Destination is required.");
         return;
       }
+      const targetHost = targetHostFromInput(target, realm);
       let stream = null;
       try {
         stream = await ensureLocalMedia(mode);
@@ -378,6 +395,7 @@
         return;
       }
       const inviter = new SIP.Inviter(userAgent, targetUri, {
+        extraHeaders: targetHost ? [`X-Callture-Target-Host: ${targetHost}`] : [],
         sessionDescriptionHandlerOptions: {
           constraints: mediaConstraints(mode),
           localMediaStream: stream || undefined,
@@ -386,6 +404,9 @@
       activeSession = inviter;
       bindSessionState(inviter, "outgoing");
       await inviter.invite();
+      if (targetHost) {
+        logWebRTC(`Target host header: ${targetHost}`);
+      }
       logWebRTC(`Calling ${targetUri.toString()} (${mode})`);
     } catch (err) {
       logWebRTC(`Call failed: ${err}`);
