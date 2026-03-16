@@ -49,6 +49,7 @@ WEBRTC_OUTBOUND_IDENTITY_DEFAULT = os.getenv("WEBRTC_OUTBOUND_IDENTITY_DEFAULT",
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
 DEFAULT_ADMIN_PASSWORD = os.getenv("CC_ADMIN_PASSWORD", "Lukshumi2008!")
+ALLOW_ALL_PORTAL_USERS = os.getenv("CC_ALLOW_ALL_PORTAL_USERS", "1").strip().lower() in {"1", "true", "yes", "on"}
 PROVISION_SIP_SERVER = os.getenv("PROVISION_SIP_SERVER", "").strip()
 try:
     PROVISION_SIP_PORT = int(os.getenv("PROVISION_SIP_PORT", "5060"))
@@ -1275,6 +1276,8 @@ def require_admin_or_redirect(request: Request) -> tuple[str | None, RedirectRes
     if not user:
         log_security_event(request, "admin_access_no_session", severity="medium")
         return None, redirect_login()
+    if ALLOW_ALL_PORTAL_USERS:
+        return user, None
     if not is_admin_user(user):
         log_security_event(
             request,
@@ -2096,7 +2099,9 @@ def shutdown() -> None:
 def root(request: Request):
     user = require_user(request)
     if user:
-        return RedirectResponse(url="/dashboard", status_code=303) if is_admin_user(user) else redirect_settings()
+        if is_admin_user(user) or ALLOW_ALL_PORTAL_USERS:
+            return RedirectResponse(url="/dashboard", status_code=303)
+        return redirect_settings()
     return RedirectResponse(url="/login", status_code=303)
 
 
@@ -2104,7 +2109,9 @@ def root(request: Request):
 def login_page(request: Request):
     user = require_user(request)
     if user:
-        return RedirectResponse(url="/dashboard", status_code=303) if is_admin_user(user) else redirect_settings()
+        if is_admin_user(user) or ALLOW_ALL_PORTAL_USERS:
+            return RedirectResponse(url="/dashboard", status_code=303)
+        return redirect_settings()
     return templates.TemplateResponse("login.html", {"request": request, "error": None})
 
 
@@ -2127,7 +2134,9 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
         request.session["user"] = username
         request.session.pop("force_password_change", None)
         log_security_event(request, "login_success", severity="info", username=username.strip())
-        return RedirectResponse(url="/dashboard", status_code=303) if is_admin_user(username) else redirect_settings()
+        if is_admin_user(username) or ALLOW_ALL_PORTAL_USERS:
+            return RedirectResponse(url="/dashboard", status_code=303)
+        return redirect_settings()
     log_security_event(
         request,
         "login_failed",
