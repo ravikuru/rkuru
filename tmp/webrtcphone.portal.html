@@ -166,6 +166,22 @@
     return realm.trim().toLowerCase();
   }
 
+  function sipStatusCode(messageLike) {
+    return (
+      (messageLike && messageLike.message && messageLike.message.statusCode) ||
+      (messageLike && messageLike.statusCode) ||
+      null
+    );
+  }
+
+  function sipReasonPhrase(messageLike) {
+    return (
+      (messageLike && messageLike.message && messageLike.message.reasonPhrase) ||
+      (messageLike && messageLike.reasonPhrase) ||
+      ""
+    );
+  }
+
   function useExtension(ext) {
     const input = document.getElementById("webrtc-extension");
     if (input) input.value = ext || "";
@@ -519,7 +535,30 @@
           setRegisterStatus("Registration Ended", "webrtc-status-offline");
         }
       });
-      await registerer.register();
+      if (userAgent && userAgent.transport && userAgent.transport.stateChange) {
+        userAgent.transport.stateChange.addListener((state) => {
+          logWebRTC(`Transport state: ${state}`);
+        });
+      }
+      await registerer.register({
+        requestDelegate: {
+          onAccept: (response) => {
+            const code = sipStatusCode(response) || 200;
+            logWebRTC(`REGISTER accepted (${code}).`);
+          },
+          onReject: (response) => {
+            const code = sipStatusCode(response) || "unknown";
+            const reason = sipReasonPhrase(response);
+            logWebRTC(`REGISTER rejected (${code}${reason ? ` ${reason}` : ""}).`);
+            registrationReady = false;
+            if (code === 401 || code === 403) {
+              setRegisterStatus("Auth Failed", "webrtc-status-error");
+            } else {
+              setRegisterStatus(`Register ${code}`, "webrtc-status-error");
+            }
+          },
+        },
+      });
       logWebRTC(`Register request sent for ${extension}@${realm} via ${server}`);
     } catch (err) {
       logWebRTC(`Register failed: ${err}`);
