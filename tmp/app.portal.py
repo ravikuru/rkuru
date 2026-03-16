@@ -41,6 +41,9 @@ FAX_FIXED_FROM_NUMBER = "6472585272"
 FAX_FIXED_FROM_NAME = "Ravi Kuru"
 WEBRTC_DEFAULT_EXTENSION = "4166287801"
 WEBRTC_DEFAULT_PASSWORD = "telcan2008!"
+# Default user-part for outbound WebRTC->external SIP From/Contact headers.
+# Override with env var WEBRTC_OUTBOUND_IDENTITY_DEFAULT if needed.
+WEBRTC_OUTBOUND_IDENTITY_DEFAULT = os.getenv("WEBRTC_OUTBOUND_IDENTITY_DEFAULT", "6472585272").strip()
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -1816,6 +1819,8 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
     # 3) If target host is local domain and 10-digit, bridge to local user.
     local_domain = infer_webrtc_realm()
     local_domain_expr = re.escape(local_domain)
+    outbound_identity = re.sub(r"\D+", "", WEBRTC_OUTBOUND_IDENTITY_DEFAULT) or WEBRTC_DEFAULT_EXTENSION
+    outbound_from_uri = f"sip:{outbound_identity}@{local_domain}"
     xml = textwrap.dedent(
         f"""\
         <include>
@@ -1823,7 +1828,7 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
             <condition field="${{sip_authorized}}" expression="^true$">
               <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?!{local_domain_expr}$)[0-9A-Za-z.-]+$">
                 <condition field="destination_number" expression="^([0-9]{{7,15}})$">
-                  <action application="bridge" data="sofia/external/$1@${{sip_h_X-Callture-Target-Host}}"/>
+                  <action application="bridge" data="[origination_caller_id_number={outbound_identity},effective_caller_id_number={outbound_identity},sip_from_user={outbound_identity},sip_contact_user={outbound_identity},sip_from_host={local_domain},sip_from_uri={outbound_from_uri},sip_invite_from_uri={outbound_from_uri}]sofia/external/$1@${{sip_h_X-Callture-Target-Host}}"/>
                 </condition>
               </condition>
             </condition>
