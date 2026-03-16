@@ -2396,7 +2396,9 @@ async def webrtc_ws_proxy(websocket: WebSocket):
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
+    proxy_id = secrets.token_hex(4)
     await websocket.accept(subprotocol="sip")
+    print(f"WebRTC proxy[{proxy_id}] accepted client={websocket.client} host={websocket.url.hostname}")
     upstream_hosts = unique_nonempty(
         [
             websocket.url.hostname or "",
@@ -2419,24 +2421,34 @@ async def webrtc_ws_proxy(websocket: WebSocket):
                     open_timeout=2,
                     close_timeout=2,
                 )
+                print(f"WebRTC proxy[{proxy_id}] upstream connected host={host}")
                 break
             except Exception as exc:
                 last_error = exc
         if upstream is None:
-            print(f"WebRTC proxy upstream unavailable hosts={upstream_hosts} last_error={last_error}")
+            print(f"WebRTC proxy[{proxy_id}] upstream unavailable hosts={upstream_hosts} last_error={last_error}")
             await websocket.close(code=1011, reason="Upstream WS unavailable")
             return
 
         async def client_to_upstream():
+            forwarded = 0
             try:
                 while True:
                     message = await websocket.receive()
                     msg_type = message.get("type")
                     if msg_type == "websocket.disconnect":
+                        print(f"WebRTC proxy[{proxy_id}] client disconnected")
                         break
                     if message.get("text") is not None:
+                        if forwarded < 2:
+                            first_line = (message["text"] or "").splitlines()[0] if message["text"] else ""
+                            print(f"WebRTC proxy[{proxy_id}] c->u text: {first_line[:120]}")
+                        forwarded += 1
                         await upstream.send(message["text"])
                     elif message.get("bytes") is not None:
+                        if forwarded < 2:
+                            print(f"WebRTC proxy[{proxy_id}] c->u bytes: {len(message['bytes'])}")
+                        forwarded += 1
                         await upstream.send(message["bytes"])
             except WebSocketDisconnect:
                 pass
@@ -2444,9 +2456,17 @@ async def webrtc_ws_proxy(websocket: WebSocket):
                 pass
 
         async def upstream_to_client():
+            relayed = 0
             try:
                 while True:
                     incoming = await upstream.recv()
+                    if relayed < 2:
+                        if isinstance(incoming, bytes):
+                            print(f"WebRTC proxy[{proxy_id}] u->c bytes: {len(incoming)}")
+                        else:
+                            first_line = (incoming or "").splitlines()[0] if incoming else ""
+                            print(f"WebRTC proxy[{proxy_id}] u->c text: {first_line[:120]}")
+                    relayed += 1
                     if isinstance(incoming, bytes):
                         await websocket.send_bytes(incoming)
                     else:
@@ -2474,7 +2494,7 @@ async def webrtc_ws_proxy(websocket: WebSocket):
     except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
         pass
     except Exception as exc:
-        print(f"WebRTC proxy runtime error: {exc}")
+        print(f"WebRTC proxy[{proxy_id}] runtime error: {exc}")
     finally:
         if upstream is not None:
             try:
@@ -2486,6 +2506,7 @@ async def webrtc_ws_proxy(websocket: WebSocket):
                 await websocket.close()
             except Exception:
                 pass
+        print(f"WebRTC proxy[{proxy_id}] closed")
 
 
 @app.get("/queues", response_class=HTMLResponse)

@@ -166,6 +166,12 @@
     return realm.trim().toLowerCase();
   }
 
+  function canonicalProxyWsUrl(transport) {
+    const host = window.location.host;
+    if (!host) return "";
+    return `${transport === "wss" ? "wss" : "ws"}://${host}/webrtc/ws`;
+  }
+
   function sipStatusCode(messageLike) {
     return (
       (messageLike && messageLike.message && messageLike.message.statusCode) ||
@@ -277,6 +283,12 @@
       const realmInput = val("webrtc-realm");
       const realm = normalizeRealm(realmInput);
       const transport = val("webrtc-transport");
+      const wsUrlInputEl = document.getElementById("webrtc-ws-url");
+      const wssUrlInputEl = document.getElementById("webrtc-wss-url");
+      const canonicalWs = canonicalProxyWsUrl("ws");
+      const canonicalWss = canonicalProxyWsUrl("wss");
+      if (wsUrlInputEl && canonicalWs) wsUrlInputEl.value = canonicalWs;
+      if (wssUrlInputEl && canonicalWss) wssUrlInputEl.value = canonicalWss;
       if (!extension || !sipPassword || !realm) {
         logWebRTC("Cannot save: extension, password, and realm are required.");
         return false;
@@ -453,7 +465,13 @@
       const realmInput = val("webrtc-realm");
       const realm = normalizeRealm(realmInput);
       const transport = val("webrtc-transport");
-      const server = transport === "ws" ? val("webrtc-ws-url") : val("webrtc-wss-url");
+      const wsUrlInputEl = document.getElementById("webrtc-ws-url");
+      const wssUrlInputEl = document.getElementById("webrtc-wss-url");
+      const canonicalWs = canonicalProxyWsUrl("ws");
+      const canonicalWss = canonicalProxyWsUrl("wss");
+      if (wsUrlInputEl && canonicalWs) wsUrlInputEl.value = canonicalWs;
+      if (wssUrlInputEl && canonicalWss) wssUrlInputEl.value = canonicalWss;
+      const server = transport === "ws" ? (canonicalWs || val("webrtc-ws-url")) : (canonicalWss || val("webrtc-wss-url"));
       if (!extension || !password || !realm || !server) {
         logWebRTC("Extension, password, realm, and transport URL are required.");
         setRegisterStatus("Missing Fields", "webrtc-status-error");
@@ -723,6 +741,22 @@
     if (transportSelect && window.location.protocol === "https:") {
       transportSelect.value = "wss";
       logWebRTC("HTTPS detected: using wss transport.");
+    }
+    const wsUrlInputEl = document.getElementById("webrtc-ws-url");
+    const wssUrlInputEl = document.getElementById("webrtc-wss-url");
+    const canonicalWs = canonicalProxyWsUrl("ws");
+    const canonicalWss = canonicalProxyWsUrl("wss");
+    if (wsUrlInputEl && canonicalWs) {
+      if ((wsUrlInputEl.value || "").trim() !== canonicalWs) {
+        wsUrlInputEl.value = canonicalWs;
+        logWebRTC(`WS URL normalized to ${canonicalWs}.`);
+      }
+    }
+    if (wssUrlInputEl && canonicalWss) {
+      if ((wssUrlInputEl.value || "").trim() !== canonicalWss) {
+        wssUrlInputEl.value = canonicalWss;
+        logWebRTC(`WSS URL normalized to ${canonicalWss}.`);
+      }
     }
     const realmInput = document.getElementById("webrtc-realm");
     if (realmInput) {
