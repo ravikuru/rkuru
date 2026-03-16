@@ -289,6 +289,16 @@
     };
   }
 
+  async function microphonePermissionState() {
+    try {
+      if (!navigator.permissions || !navigator.permissions.query) return "unknown";
+      const status = await navigator.permissions.query({ name: "microphone" });
+      return (status && status.state) ? status.state : "unknown";
+    } catch (_err) {
+      return "unknown";
+    }
+  }
+
   async function ensureLocalMedia(mode) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       logWebRTC("Browser media API not available (likely insecure context).");
@@ -549,6 +559,13 @@
       try {
         stream = await ensureLocalMedia(mode);
         if (!stream || !stream.getAudioTracks || stream.getAudioTracks().length === 0) {
+          if (mode === "audio") {
+            const micState = await microphonePermissionState();
+            logWebRTC(`Audio call cancelled: no microphone audio track (permission=${micState}, secure=${window.isSecureContext ? "yes" : "no"}).`);
+            logWebRTC("Fix: open portal over HTTPS, allow browser microphone permission, select the correct input device, then retry.");
+            resetAudioCallButtonAfterMinDialing(1200);
+            return;
+          }
           logWebRTC("No microphone audio track available. Placing receive-only fallback call.");
           constraints = fallbackMediaConstraints();
           offerOptions = fallbackOfferOptions(mode);
@@ -556,6 +573,13 @@
       } catch (mediaErr) {
         const name = (mediaErr && mediaErr.name) ? mediaErr.name : "MediaError";
         logWebRTC(`Microphone error: ${name} ${mediaErr || ""}`.trim());
+        if (mode === "audio") {
+          const micState = await microphonePermissionState();
+          logWebRTC(`Audio call cancelled: microphone unavailable (permission=${micState}, secure=${window.isSecureContext ? "yes" : "no"}).`);
+          logWebRTC("Fix: open portal over HTTPS, allow browser microphone permission, select the correct input device, then retry.");
+          resetAudioCallButtonAfterMinDialing(1200);
+          return;
+        }
         logWebRTC("Placing receive-only fallback call (remote can be heard; mic uplink unavailable).");
         constraints = fallbackMediaConstraints();
         offerOptions = fallbackOfferOptions(mode);
