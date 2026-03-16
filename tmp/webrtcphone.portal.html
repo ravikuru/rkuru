@@ -514,6 +514,11 @@
     try {
       if (mode === "audio") {
         setAudioCallButton("Dialing");
+        if (!window.isSecureContext) {
+          logWebRTC("Audio call blocked: insecure page context. Open portal over HTTPS (or localhost) and allow microphone.");
+          resetAudioCallButtonAfterMinDialing(1200);
+          return;
+        }
       }
       if (!userAgent) {
         logWebRTC("Not registered. Auto-registering before call...");
