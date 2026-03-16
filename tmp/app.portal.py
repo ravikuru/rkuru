@@ -2294,7 +2294,7 @@ def save_webrtc_credentials(
     transport: str = Form("ws"),
 ):
     user = require_user(request)
-    if not is_admin_user(user):
+    if not user:
         return JSONResponse(
             {"ok": False, "error": "Unauthorized"},
             status_code=401,
@@ -2369,7 +2369,7 @@ def save_webrtc_credentials(
 @app.websocket("/webrtc/ws")
 async def webrtc_ws_proxy(websocket: WebSocket):
     session = websocket.scope.get("session") or {}
-    if session.get("user") != DEFAULT_ADMIN_USER:
+    if not session.get("user"):
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
