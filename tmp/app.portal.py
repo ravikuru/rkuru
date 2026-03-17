@@ -2241,7 +2241,7 @@ def webrtc_phone_page(request: Request):
         ws_host = f"{hostname_only}:8088"
     # Keep ws fallback on 8088 and wss on the TLS endpoint.
     webrtc_ws_url = f"ws://{ws_host}/webrtc/ws" if ws_host else "ws://204.29.213.58:8088/webrtc/ws"
-    webrtc_wss_url = f"wss://{hostname_only}/webrtc/ws" if hostname_only else "wss://204.29.213.58/webrtc/ws"
+    webrtc_wss_url = f"wss://{hostname_only}:8088/webrtc/ws" if hostname_only else "wss://204.29.213.58:8088/webrtc/ws"
     response = templates.TemplateResponse(
         "webrtcphone.html",
         {

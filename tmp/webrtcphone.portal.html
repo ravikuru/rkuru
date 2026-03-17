@@ -171,12 +171,10 @@
   function wsProxyDefaults() {
     const hostOnly = window.location.hostname || "204.29.213.58";
     const hostPort = window.location.host || hostOnly;
-    const wsHostPort = (window.location.protocol === "http:" && window.location.port)
-      ? hostPort
-      : `${hostOnly}:8088`;
+    const wsHostPort = `${hostOnly}:8088`;
     const wsOnCurrentOrigin = `ws://${wsHostPort}/webrtc/ws`;
-    const wssOnCurrentOrigin = `wss://${hostPort}/webrtc/ws`;
-    const wssOnDefaultTls = `wss://${hostOnly}/webrtc/ws`;
+    const wssOnCurrentOrigin = `wss://${hostOnly}:8088/webrtc/ws`;
+    const wssOnDefaultTls = `wss://${hostOnly}:8088/webrtc/ws`;
     if (window.location.protocol === "https:") {
       return { transport: "wss", wsUrl: wsOnCurrentOrigin, wssUrl: wssOnCurrentOrigin };
     }
