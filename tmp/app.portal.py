@@ -2263,6 +2263,14 @@ def webrtc_phone_page(request: Request):
     return response
 
 
+@app.get("/saraphone")
+def saraphone_page(request: Request):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+    return RedirectResponse(url="/static/saraphone/saraphone.html", status_code=302)
+
+
 @app.websocket("/webrtc/ws")
 async def webrtc_ws_proxy(websocket: WebSocket):
     global WEBRTC_UPSTREAM_LAST_GOOD
