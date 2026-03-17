@@ -49,11 +49,42 @@ Python reference implementation covering queue routing, dashboard metrics, analy
 - Real-time load-aware suggestions
 - Proactive intervention messaging hooks
 
+### WebRTC Phone
+- Browser-based SIP softphone for FreeSWITCH (SIP over WebSocket via JsSIP)
+- Outbound and inbound call handling with WebRTC audio
+- Full dialpad with DTMF in-call support
+- Call controls: mute, hold, blind/attended transfer
+- Registration status, call timer, call history
+- Live queue dashboard with wallboard metrics from the platform API
+- Configurable WebSocket URL, SIP credentials, STUN/TURN servers
+- Settings persistence via localStorage
+- Keyboard shortcuts (Enter to dial, Escape to hang up)
+
 ## Quick start
 
 ```bash
+# Run the in-memory queue platform demo
 python3 demo.py
+
+# Launch the WebRTC phone UI (serves on http://localhost:8080)
+python3 webrtc_phone/server.py
 ```
+
+### FreeSWITCH configuration
+
+The WebRTC phone connects to FreeSWITCH via SIP over WebSocket. Ensure your FreeSWITCH has:
+
+1. **`mod_sofia`** with a WebSocket listener (ws/wss on e.g. port 7443)
+2. **SRTP** enabled for the profile
+3. **ICE** support configured
+
+Example `sip_profile` additions:
+```xml
+<param name="ws-binding" value=":5066"/>
+<param name="wss-binding" value=":7443"/>
+```
+
+Then point the phone's **WebSocket URL** to `wss://your-freeswitch:7443` and register with a valid SIP extension/password.
 
 ## Structure
 
@@ -68,6 +99,12 @@ queue_platform/
   analytics.py
   ai.py
   facade.py
+webrtc_phone/
+  server.py              # HTTP server + JSON API bridge
+  static/
+    index.html           # Phone UI
+    css/phone.css        # Styling
+    js/app.js            # JsSIP SIP/WebRTC integration
 demo.py
 ```
 
@@ -76,3 +113,4 @@ demo.py
 - This project is an application-layer reference implementation.
 - Queue-specific behavior is isolated in `QueueFunctions` for easier feature expansion later.
 - Telephony signaling/media execution (e.g., FreeSWITCH ESL event handlers, SIP leg control) should call into `QueueEngine` methods.
+- The WebRTC phone uses only the Python standard library for its server and JsSIP (loaded from CDN) on the client—no npm/node required.
