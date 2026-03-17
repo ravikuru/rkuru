@@ -103,6 +103,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 platform = ContactCenterPlatform()
 security_autoblock_stop = threading.Event()
 security_autoblock_thread: threading.Thread | None = None
+WEBRTC_UPSTREAM_LAST_GOOD: str | None = None
 
 
 def db_conn() -> sqlite3.Connection:
@@ -2210,8 +2211,12 @@ def webrtc_phone_page(request: Request):
         extensions = conn.execute(
             "SELECT extension, display_name FROM vpbx_extensions ORDER BY extension"
         ).fetchall()
-    webrtc_ws_url = "wss://204.29.213.58/webrtc/ws"
-    webrtc_wss_url = "wss://204.29.213.58/webrtc/ws"
+    host_header = (request.headers.get("host") or "").strip()
+    page_host = host_header or (request.url.netloc or "").strip() or (request.url.hostname or "").strip()
+    hostname_only = (request.url.hostname or "").strip() or infer_webrtc_realm()
+    # Keep ws on the current host/port and wss on the default TLS endpoint.
+    webrtc_ws_url = f"ws://{page_host}/webrtc/ws" if page_host else "ws://204.29.213.58:8088/webrtc/ws"
+    webrtc_wss_url = f"wss://{hostname_only}/webrtc/ws" if hostname_only else "wss://204.29.213.58/webrtc/ws"
     response = templates.TemplateResponse(
         "webrtcphone.html",
         {
@@ -2235,6 +2240,7 @@ def webrtc_phone_page(request: Request):
 
 @app.websocket("/webrtc/ws")
 async def webrtc_ws_proxy(websocket: WebSocket):
+    global WEBRTC_UPSTREAM_LAST_GOOD
     session = websocket.scope.get("session") or {}
     if not session.get("user"):
         await websocket.close(code=4401, reason="Unauthorized")
@@ -2243,14 +2249,15 @@ async def webrtc_ws_proxy(websocket: WebSocket):
     proxy_id = secrets.token_hex(4)
     await websocket.accept(subprotocol="sip")
     print(f"WebRTC proxy[{proxy_id}] accepted client={websocket.client} host={websocket.url.hostname}")
-    # Prefer loopback first to avoid intermittent hairpin/NAT issues when
-    # reaching FreeSWITCH from the same host via public IP.
+    preferred = WEBRTC_UPSTREAM_LAST_GOOD or ""
     upstream_hosts = unique_nonempty(
         [
-            "127.0.0.1",
-            "localhost",
+            preferred,
             infer_webrtc_realm(),
             websocket.url.hostname or "",
+            "204.29.213.58",
+            "127.0.0.1",
+            "localhost",
         ]
     )
     upstream = None
@@ -2263,9 +2270,10 @@ async def webrtc_ws_proxy(websocket: WebSocket):
                     subprotocols=["sip"],
                     ping_interval=20,
                     ping_timeout=20,
-                    open_timeout=4,
+                    open_timeout=2,
                     close_timeout=2,
                 )
+                WEBRTC_UPSTREAM_LAST_GOOD = host
                 print(f"WebRTC proxy[{proxy_id}] upstream connected host={host}")
                 break
             except Exception as exc:

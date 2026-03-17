@@ -143,6 +143,18 @@
     return el ? (el.value || "").trim() : "";
   }
 
+  function wsProxyDefaults() {
+    const hostPort = window.location.host || "204.29.213.58";
+    const hostOnly = window.location.hostname || "204.29.213.58";
+    const wsOnCurrentOrigin = `ws://${hostPort}/webrtc/ws`;
+    const wssOnCurrentOrigin = `wss://${hostPort}/webrtc/ws`;
+    const wssOnDefaultTls = `wss://${hostOnly}/webrtc/ws`;
+    if (window.location.protocol === "https:") {
+      return { transport: "wss", wsUrl: wsOnCurrentOrigin, wssUrl: wssOnCurrentOrigin };
+    }
+    return { transport: "ws", wsUrl: wsOnCurrentOrigin, wssUrl: wssOnDefaultTls };
+  }
+
   function hasLiveAudioTrack(stream) {
     if (!stream || typeof stream.getAudioTracks !== "function") return false;
     const tracks = stream.getAudioTracks();
@@ -468,7 +480,15 @@
       logWebRTC(`Register failed: ${err}`);
       setRegisterStatus("Register Failed", "webrtc-status-error");
       if (allowFallback && val("webrtc-transport") === "wss") {
-        logWebRTC("WSS failed and WS fallback is disabled by configuration.");
+        const transportSelect = document.getElementById("webrtc-transport");
+        if (transportSelect) {
+          transportSelect.value = "ws";
+        }
+        logWebRTC(`WSS failed, retrying over ${val("webrtc-ws-url")} ...`);
+        userAgent = null;
+        registerer = null;
+        await registerWebRTC(false);
+        return;
       }
       userAgent = null;
       registerer = null;
@@ -609,27 +629,28 @@
     logWebRTC(window.SIP ? "SIP.js loaded." : "SIP.js not loaded.");
     logWebRTC("WebRTC page ready. Click Register.");
     setRegisterStatus("Not Registered", "webrtc-status-offline");
+    const defaults = wsProxyDefaults();
     const transportSelect = document.getElementById("webrtc-transport");
     if (transportSelect) {
-      transportSelect.value = "wss";
-      logWebRTC("Transport forced to wss.");
+      transportSelect.value = defaults.transport;
+      logWebRTC(`Transport default set to ${defaults.transport}.`);
     }
     const wsInput = document.getElementById("webrtc-ws-url");
     if (wsInput) {
-      wsInput.value = "wss://204.29.213.58/webrtc/ws";
-      logWebRTC("WS field forced to wss://204.29.213.58/webrtc/ws");
+      wsInput.value = defaults.wsUrl;
+      logWebRTC(`WS URL set to ${defaults.wsUrl}`);
     }
     const wssInput = document.getElementById("webrtc-wss-url");
     if (wssInput) {
-      wssInput.value = "wss://204.29.213.58/webrtc/ws";
-      logWebRTC("WSS URL forced to wss://204.29.213.58/webrtc/ws");
+      wssInput.value = defaults.wssUrl;
+      logWebRTC(`WSS URL set to ${defaults.wssUrl}`);
     }
     const btnRegister = document.getElementById("webrtc-register-btn");
     const btnUnregister = document.getElementById("webrtc-unregister-btn");
     const btnAudio = document.getElementById("webrtc-audio-call-btn");
     const btnVideo = document.getElementById("webrtc-video-call-btn");
     const btnHangup = document.getElementById("webrtc-hangup-btn");
-    if (btnRegister) btnRegister.addEventListener("click", function () { registerWebRTC(false); });
+    if (btnRegister) btnRegister.addEventListener("click", function () { registerWebRTC(true); });
     if (btnUnregister) btnUnregister.addEventListener("click", unregisterWebRTC);
     if (btnAudio) btnAudio.addEventListener("click", function () { callWebRTC("audio"); });
     if (btnVideo) btnVideo.addEventListener("click", function () { callWebRTC("video"); });
