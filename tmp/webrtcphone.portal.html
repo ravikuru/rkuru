@@ -353,8 +353,15 @@
         return;
       }
       if (userAgent) {
-        logWebRTC("Already registered or connecting.");
-        return;
+        logWebRTC("Existing SIP session found; reinitializing registration...");
+        try {
+          if (registerer) await registerer.unregister();
+        } catch (_err) {}
+        try {
+          await userAgent.stop();
+        } catch (_err) {}
+        userAgent = null;
+        registerer = null;
       }
       setRegisterStatus("Connecting...", "webrtc-status-connecting");
       const uri = SIP.UserAgent.makeURI(`sip:${extension}@${realm}`);
