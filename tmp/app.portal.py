@@ -2211,7 +2211,7 @@ def webrtc_phone_page(request: Request):
         ).fetchall()
     webrtc_ws_url = "wss://204.29.213.58/webrtc/ws"
     webrtc_wss_url = "wss://204.29.213.58/webrtc/ws"
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         "webrtcphone.html",
         {
             "request": request,
@@ -2226,6 +2226,10 @@ def webrtc_phone_page(request: Request):
             "webrtc_default_password": WEBRTC_DEFAULT_PASSWORD,
         },
     )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.websocket("/webrtc/ws")
