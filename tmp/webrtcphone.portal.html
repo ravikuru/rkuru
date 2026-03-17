@@ -50,8 +50,8 @@
     </label>
     <label>Transport
       <select id="webrtc-transport">
-        <option value="ws" selected>ws (fast test mode)</option>
-        <option value="wss">wss (requires trusted TLS cert)</option>
+        <option value="ws">ws (fast test mode)</option>
+        <option value="wss" selected>wss (requires trusted TLS cert)</option>
       </select>
     </label>
     <label>WSS URL
@@ -559,14 +559,19 @@
     logWebRTC("WebRTC page ready. Click Register.");
     setRegisterStatus("Not Registered", "webrtc-status-offline");
     const transportSelect = document.getElementById("webrtc-transport");
-    if (transportSelect && window.location.protocol === "https:") {
+    if (transportSelect) {
       transportSelect.value = "wss";
-      logWebRTC("HTTPS detected: using wss transport.");
+      logWebRTC("Transport forced to wss.");
     }
     const wsInput = document.getElementById("webrtc-ws-url");
     if (wsInput) {
       wsInput.value = "ws://204.29.213.58:8088/webrtc/ws";
       logWebRTC("WS URL forced to ws://204.29.213.58:8088/webrtc/ws");
+    }
+    const wssInput = document.getElementById("webrtc-wss-url");
+    if (wssInput) {
+      wssInput.value = "wss://204.29.213.58/webrtc/ws";
+      logWebRTC("WSS URL forced to wss://204.29.213.58/webrtc/ws");
     }
     const btnRegister = document.getElementById("webrtc-register-btn");
     const btnUnregister = document.getElementById("webrtc-unregister-btn");
