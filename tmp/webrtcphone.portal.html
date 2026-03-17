@@ -352,7 +352,7 @@
     });
   }
 
-  async function registerWebRTC(allowFallback = true) {
+  async function registerWebRTC(allowFallback = true, attempt = 1) {
     try {
       if (!window.SIP || !window.SIP.UserAgent) {
         logWebRTC("SIP.js failed to load.");
@@ -379,7 +379,7 @@
         userAgent = null;
         registerer = null;
       }
-      setRegisterStatus("Connecting...", "webrtc-status-connecting");
+      setRegisterStatus(`Connecting... (attempt ${attempt})`, "webrtc-status-connecting");
       const uri = SIP.UserAgent.makeURI(`sip:${extension}@${realm}`);
       if (!uri) {
         logWebRTC("Invalid SIP URI for extension/realm.");
@@ -445,8 +445,28 @@
         clearTimeout(registerResponseTimer);
       }
       registerResponseTimer = window.setTimeout(() => {
+        registerResponseTimer = null;
+        logWebRTC(`REGISTER timed out waiting for response (attempt ${attempt}).`);
+        if (attempt < 3) {
+          setRegisterStatus(`Retrying... (${attempt + 1}/3)`, "webrtc-status-connecting");
+          try {
+            if (registerer) {
+              registerer.unregister().catch(() => {});
+            }
+          } catch (_err) {}
+          try {
+            if (userAgent) {
+              userAgent.stop().catch(() => {});
+            }
+          } catch (_err) {}
+          userAgent = null;
+          registerer = null;
+          window.setTimeout(() => {
+            registerWebRTC(allowFallback, attempt + 1);
+          }, 350);
+          return;
+        }
         setRegisterStatus("Register Timeout", "webrtc-status-error");
-        logWebRTC("REGISTER timed out waiting for response.");
       }, 12000);
       await registerer.register({
         requestDelegate: {
@@ -460,20 +480,21 @@
             setRegisterStatus("Registered", "webrtc-status-online");
           },
           onReject: (response) => {
+            const code = (response && response.message && response.message.statusCode) || "unknown";
+            if (code === 401 || code === 407) {
+              logWebRTC(`REGISTER challenge (${code}), waiting for authenticated retry...`);
+              setRegisterStatus("Authenticating...", "webrtc-status-connecting");
+              return;
+            }
             if (registerResponseTimer) {
               clearTimeout(registerResponseTimer);
               registerResponseTimer = null;
             }
-            const code = (response && response.message && response.message.statusCode) || "unknown";
             logWebRTC(`REGISTER rejected (${code}).`);
             setRegisterStatus(`Register ${code}`, "webrtc-status-error");
           }
         }
       });
-      if (registerResponseTimer) {
-        clearTimeout(registerResponseTimer);
-        registerResponseTimer = null;
-      }
       logWebRTC(`Register request sent for ${extension}@${realm} via ${server}`);
     } catch (err) {
       if (registerResponseTimer) {
@@ -483,14 +504,19 @@
       logWebRTC(`Register failed: ${err}`);
       setRegisterStatus("Register Failed", "webrtc-status-error");
       if (allowFallback && val("webrtc-transport") === "wss") {
-        const transportSelect = document.getElementById("webrtc-transport");
-        if (transportSelect) {
-          transportSelect.value = "ws";
+        if (window.location.protocol === "https:") {
+          logWebRTC("WSS failed on HTTPS page, retrying WSS once...");
+          userAgent = null;
+          registerer = null;
+          await registerWebRTC(false, attempt + 1);
+          return;
         }
+        const transportSelect = document.getElementById("webrtc-transport");
+        if (transportSelect) transportSelect.value = "ws";
         logWebRTC(`WSS failed, retrying over ${val("webrtc-ws-url")} ...`);
         userAgent = null;
         registerer = null;
-        await registerWebRTC(false);
+        await registerWebRTC(false, 1);
         return;
       }
       userAgent = null;
