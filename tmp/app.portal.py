@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.websockets import WebSocketState
 import websockets
 
 from queue_platform import Agent, ContactCenterPlatform, QueueConfig, RoutingStrategy
@@ -2235,7 +2236,7 @@ def webrtc_phone_page(request: Request):
 @app.websocket("/webrtc/ws")
 async def webrtc_ws_proxy(websocket: WebSocket):
     session = websocket.scope.get("session") or {}
-    if session.get("user") != DEFAULT_ADMIN_USER:
+    if not session.get("user"):
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
@@ -2270,25 +2271,49 @@ async def webrtc_ws_proxy(websocket: WebSocket):
             return
 
         async def client_to_upstream():
-            while True:
-                message = await websocket.receive()
-                msg_type = message.get("type")
-                if msg_type == "websocket.disconnect":
-                    break
-                if message.get("text") is not None:
-                    await upstream.send(message["text"])
-                elif message.get("bytes") is not None:
-                    await upstream.send(message["bytes"])
+            try:
+                while True:
+                    message = await websocket.receive()
+                    msg_type = message.get("type")
+                    if msg_type == "websocket.disconnect":
+                        break
+                    if message.get("text") is not None:
+                        await upstream.send(message["text"])
+                    elif message.get("bytes") is not None:
+                        await upstream.send(message["bytes"])
+            except WebSocketDisconnect:
+                pass
+            except websockets.exceptions.ConnectionClosed:
+                pass
 
         async def upstream_to_client():
-            while True:
-                incoming = await upstream.recv()
-                if isinstance(incoming, bytes):
-                    await websocket.send_bytes(incoming)
-                else:
-                    await websocket.send_text(incoming)
+            try:
+                while True:
+                    incoming = await upstream.recv()
+                    if isinstance(incoming, bytes):
+                        await websocket.send_bytes(incoming)
+                    else:
+                        await websocket.send_text(incoming)
+            except websockets.exceptions.ConnectionClosed:
+                pass
+            except RuntimeError:
+                # Avoid websocket.send after websocket.close races.
+                pass
 
-        await asyncio.gather(client_to_upstream(), upstream_to_client())
+        client_task = asyncio.create_task(client_to_upstream())
+        upstream_task = asyncio.create_task(upstream_to_client())
+        done, pending = await asyncio.wait(
+            {client_task, upstream_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                raise exc
     except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
         pass
     except Exception as exc:
@@ -2299,10 +2324,11 @@ async def webrtc_ws_proxy(websocket: WebSocket):
                 await upstream.close()
             except Exception:
                 pass
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+        if websocket.client_state != WebSocketState.DISCONNECTED:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
 
 
 @app.get("/queues", response_class=HTMLResponse)
