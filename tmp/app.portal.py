@@ -2214,8 +2214,14 @@ def webrtc_phone_page(request: Request):
     host_header = (request.headers.get("host") or "").strip()
     page_host = host_header or (request.url.netloc or "").strip() or (request.url.hostname or "").strip()
     hostname_only = (request.url.hostname or "").strip() or infer_webrtc_realm()
-    # Keep ws on the current host/port and wss on the default TLS endpoint.
-    webrtc_ws_url = f"ws://{page_host}/webrtc/ws" if page_host else "ws://204.29.213.58:8088/webrtc/ws"
+    ws_host = page_host
+    if request.url.scheme == "https":
+        # Explicitly target HTTP listener for ws fallback from HTTPS page.
+        ws_host = f"{hostname_only}:8088"
+    elif ":" not in ws_host and hostname_only:
+        ws_host = f"{hostname_only}:8088"
+    # Keep ws fallback on 8088 and wss on the TLS endpoint.
+    webrtc_ws_url = f"ws://{ws_host}/webrtc/ws" if ws_host else "ws://204.29.213.58:8088/webrtc/ws"
     webrtc_wss_url = f"wss://{hostname_only}/webrtc/ws" if hostname_only else "wss://204.29.213.58/webrtc/ws"
     response = templates.TemplateResponse(
         "webrtcphone.html",
