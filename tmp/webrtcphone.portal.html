@@ -121,6 +121,7 @@
   let localStream = null;
   let audioDialingStartedAt = 0;
   let audioAnswered = false;
+  let registerResponseTimer = null;
 
   function logWebRTC(msg) {
     const box = document.getElementById("webrtc-log");
@@ -406,16 +407,64 @@
         logWebRTC(`Register state: ${state}`);
         const stateText = String(state || "");
         if (stateText.includes("Registered")) {
+          if (registerResponseTimer) {
+            clearTimeout(registerResponseTimer);
+            registerResponseTimer = null;
+          }
           setRegisterStatus("Registered", "webrtc-status-online");
         } else if (stateText.includes("Unregistered")) {
+          if (registerResponseTimer) {
+            clearTimeout(registerResponseTimer);
+            registerResponseTimer = null;
+          }
           setRegisterStatus("Not Registered", "webrtc-status-offline");
         } else if (stateText.includes("Terminated")) {
+          if (registerResponseTimer) {
+            clearTimeout(registerResponseTimer);
+            registerResponseTimer = null;
+          }
           setRegisterStatus("Registration Ended", "webrtc-status-offline");
         }
       });
-      await registerer.register();
+      if (registerResponseTimer) {
+        clearTimeout(registerResponseTimer);
+      }
+      registerResponseTimer = window.setTimeout(() => {
+        setRegisterStatus("Register Timeout", "webrtc-status-error");
+        logWebRTC("REGISTER timed out waiting for response.");
+      }, 12000);
+      await registerer.register({
+        requestDelegate: {
+          onAccept: (response) => {
+            if (registerResponseTimer) {
+              clearTimeout(registerResponseTimer);
+              registerResponseTimer = null;
+            }
+            const code = (response && response.message && response.message.statusCode) || 200;
+            logWebRTC(`REGISTER accepted (${code}).`);
+            setRegisterStatus("Registered", "webrtc-status-online");
+          },
+          onReject: (response) => {
+            if (registerResponseTimer) {
+              clearTimeout(registerResponseTimer);
+              registerResponseTimer = null;
+            }
+            const code = (response && response.message && response.message.statusCode) || "unknown";
+            logWebRTC(`REGISTER rejected (${code}).`);
+            setRegisterStatus(`Register ${code}`, "webrtc-status-error");
+          }
+        }
+      });
+      if (registerResponseTimer) {
+        clearTimeout(registerResponseTimer);
+        registerResponseTimer = null;
+      }
       logWebRTC(`Register request sent for ${extension}@${realm} via ${server}`);
     } catch (err) {
+      if (registerResponseTimer) {
+        clearTimeout(registerResponseTimer);
+        registerResponseTimer = null;
+      }
       logWebRTC(`Register failed: ${err}`);
       setRegisterStatus("Register Failed", "webrtc-status-error");
       if (allowFallback && val("webrtc-transport") === "wss") {
@@ -428,6 +477,10 @@
 
   async function unregisterWebRTC() {
     try {
+      if (registerResponseTimer) {
+        clearTimeout(registerResponseTimer);
+        registerResponseTimer = null;
+      }
       if (registerer) {
         await registerer.unregister();
       }
