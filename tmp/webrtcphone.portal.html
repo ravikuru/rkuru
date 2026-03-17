@@ -482,10 +482,10 @@
       try {
         stream = await ensureLocalMedia(mode);
         if (mode === "audio" && !hasLiveAudioTrack(stream)) {
-          logWebRTC("Audio call blocked: microphone track unavailable. This prevents one-way audio.");
-          logWebRTC("Tip: allow microphone permission or use HTTPS for secure media capture.");
-          resetAudioCallButtonAfterMinDialing(1000);
-          return;
+          logWebRTC("Mic track unavailable: placing call in receive-only mode (one-way).");
+          logWebRTC("For two-way audio, use HTTPS and allow microphone permission.");
+          constraints = fallbackMediaConstraints();
+          offerOptions = fallbackOfferOptions(mode);
         }
         if (!stream) {
           logWebRTC("Media unavailable: using receive-only fallback to place call.");
@@ -495,14 +495,15 @@
       } catch (mediaErr) {
         logWebRTC(`Media open warning: ${mediaErr}`);
         if (mode === "audio") {
-          logWebRTC("Audio call blocked: microphone capture failed. This prevents one-way audio.");
-          logWebRTC("Tip: allow microphone permission or use HTTPS for secure media capture.");
-          resetAudioCallButtonAfterMinDialing(1000);
-          return;
+          logWebRTC("Mic capture failed: placing call in receive-only mode (one-way).");
+          logWebRTC("For two-way audio, use HTTPS and allow microphone permission.");
+          constraints = fallbackMediaConstraints();
+          offerOptions = fallbackOfferOptions(mode);
+        } else {
+          logWebRTC("Mic unavailable: sending call in receive-only fallback mode.");
+          constraints = fallbackMediaConstraints();
+          offerOptions = fallbackOfferOptions(mode);
         }
-        logWebRTC("Mic unavailable: sending call in receive-only fallback mode.");
-        constraints = fallbackMediaConstraints();
-        offerOptions = fallbackOfferOptions(mode);
       }
       const inviter = new SIP.Inviter(userAgent, targetUri, {
         extraHeaders: targetHost ? [`X-Callture-Target-Host: ${targetHost}`] : [],
