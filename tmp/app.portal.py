@@ -2248,13 +2248,14 @@ def webrtc_phone_page(request: Request):
 async def webrtc_ws_proxy(websocket: WebSocket):
     global WEBRTC_UPSTREAM_LAST_GOOD
     session = websocket.scope.get("session") or {}
-    if not session.get("user"):
-        await websocket.close(code=4401, reason="Unauthorized")
-        return
+    session_user = session.get("user")
 
     proxy_id = secrets.token_hex(4)
     await websocket.accept(subprotocol="sip")
-    print(f"WebRTC proxy[{proxy_id}] accepted client={websocket.client} host={websocket.url.hostname}")
+    print(
+        f"WebRTC proxy[{proxy_id}] accepted client={websocket.client} "
+        f"host={websocket.url.hostname} session_user={session_user or '-'}"
+    )
     preferred = WEBRTC_UPSTREAM_LAST_GOOD or ""
     upstream_hosts = unique_nonempty(
         [
