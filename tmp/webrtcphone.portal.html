@@ -72,7 +72,7 @@
     <div style="display:flex; gap:8px; align-items:end;">
       <button id="webrtc-register-btn" type="button">Register</button>
       <button id="webrtc-unregister-btn" type="button">Unregister</button>
-      <button id="webrtc-audio-call-btn" type="button">Call Audio</button>
+      <button id="webrtc-audio-call-btn" type="button">Audio Call</button>
       <button id="webrtc-video-call-btn" type="button">Call Video</button>
       <button id="webrtc-hangup-btn" type="button">Hangup</button>
     </div>
@@ -119,6 +119,8 @@
   let registerer = null;
   let activeSession = null;
   let localStream = null;
+  let audioDialingStartedAt = 0;
+  let audioAnswered = false;
 
   function logWebRTC(msg) {
     const box = document.getElementById("webrtc-log");
@@ -144,6 +146,32 @@
     const input = document.getElementById("webrtc-extension");
     if (input) input.value = ext || "";
     if (input) input.focus();
+  }
+
+  function setAudioCallButton(text) {
+    const btn = document.getElementById("webrtc-audio-call-btn");
+    if (!btn) return;
+    btn.textContent = text;
+    if (text === "Dialing") {
+      audioDialingStartedAt = Date.now();
+      audioAnswered = false;
+    } else if (text === "Answered") {
+      audioAnswered = true;
+    }
+  }
+
+  function resetAudioCallButton() {
+    setAudioCallButton("Audio Call");
+  }
+
+  function resetAudioCallButtonAfterMinDialing(minMs) {
+    if (audioAnswered || !audioDialingStartedAt) {
+      resetAudioCallButton();
+      return;
+    }
+    const elapsed = Date.now() - audioDialingStartedAt;
+    const wait = Math.max(0, (minMs || 0) - elapsed);
+    window.setTimeout(resetAudioCallButton, wait);
   }
 
   function buildTargetUri(rawTarget, realm) {
@@ -172,13 +200,35 @@
       if (!body) return "";
       const at = body.lastIndexOf("@");
       if (at === -1) return (realm || "").trim();
-      return body.slice(at + 1).trim();
+      let hostPart = body.slice(at + 1).trim();
+      hostPart = hostPart.split(";", 1)[0].split("?", 1)[0].trim();
+      if (hostPart.startsWith("[") && hostPart.includes("]")) {
+        hostPart = hostPart.slice(1, hostPart.indexOf("]"));
+      } else if (hostPart.includes(":")) {
+        hostPart = hostPart.split(":", 1)[0];
+      }
+      return hostPart;
+    }
+    const plain = target.split("@", 2);
+    if (plain.length === 2) {
+      return targetHostFromInput(`sip:${target}`, realm);
     }
     return (realm || "").trim();
   }
 
   function mediaConstraints(mode) {
     return { audio: true, video: mode === "video" };
+  }
+
+  function fallbackMediaConstraints() {
+    return { audio: false, video: false };
+  }
+
+  function fallbackOfferOptions(mode) {
+    return {
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: mode === "video",
+    };
   }
 
   async function ensureLocalMedia(mode) {
@@ -247,12 +297,35 @@
     tryPlay(remoteVideo);
   }
 
-  function bindSessionState(session, label) {
+  function bindSessionState(session, label, mode) {
     if (!session || !session.stateChange) {
       return;
     }
     session.stateChange.addListener((state) => {
       logWebRTC(`${label} state: ${state}`);
+      const stateText = String(state || "");
+      if (label === "outgoing" && mode === "audio") {
+        if (
+          state === SIP.SessionState.Initial ||
+          state === SIP.SessionState.Establishing ||
+          stateText.includes("Initial") ||
+          stateText.includes("Establishing")
+        ) {
+          setAudioCallButton("Dialing");
+        } else if (
+          state === SIP.SessionState.Established ||
+          stateText.includes("Established")
+        ) {
+          setAudioCallButton("Answered");
+        } else if (
+          state === SIP.SessionState.Terminating ||
+          state === SIP.SessionState.Terminated ||
+          stateText.includes("Terminating") ||
+          stateText.includes("Terminated")
+        ) {
+          resetAudioCallButtonAfterMinDialing(1200);
+        }
+      }
       attachSessionMedia(session);
     });
   }
@@ -296,9 +369,9 @@
       userAgent.delegate = {
         onInvite: async (invitation) => {
           activeSession = invitation;
-          bindSessionState(invitation, "incoming");
-          logWebRTC("Incoming call received.");
           const preferredMode = val("webrtc-call-type") || "audio";
+          bindSessionState(invitation, "incoming", preferredMode === "video" ? "video" : "audio");
+          logWebRTC("Incoming call received.");
           try {
             await ensureLocalMedia(preferredMode === "video" ? "video" : "audio");
           } catch (mediaErr) {
@@ -364,6 +437,7 @@
       userAgent = null;
       registerer = null;
       activeSession = null;
+      resetAudioCallButton();
       logWebRTC("Unregistered and disconnected.");
       setRegisterStatus("Not Registered", "webrtc-status-offline");
     } catch (err) {
@@ -374,35 +448,54 @@
 
   async function callWebRTC(mode) {
     try {
+      if (mode === "audio") {
+        setAudioCallButton("Dialing");
+      }
       if (!userAgent) {
-        logWebRTC("Register first.");
-        return;
+        logWebRTC("Not registered. Auto-registering before call...");
+        await registerWebRTC(true);
+        if (!userAgent) {
+          logWebRTC("Auto-register failed. Please click Register and retry.");
+          resetAudioCallButton();
+          return;
+        }
       }
       const target = val("webrtc-target");
       const realm = val("webrtc-realm");
       const targetUri = buildTargetUri(target, realm);
       if (!targetUri) {
         logWebRTC("Destination is required.");
+        resetAudioCallButton();
         return;
       }
       const targetHost = targetHostFromInput(target, realm);
+      logWebRTC(`Preparing call target=${targetUri.toString()} host=${targetHost || "(none)"}`);
       let stream = null;
+      let constraints = mediaConstraints(mode);
+      let offerOptions = undefined;
       try {
         stream = await ensureLocalMedia(mode);
+        if (!stream) {
+          logWebRTC("Media unavailable: using receive-only fallback to place call.");
+          constraints = fallbackMediaConstraints();
+          offerOptions = fallbackOfferOptions(mode);
+        }
       } catch (mediaErr) {
         logWebRTC(`Media open warning: ${mediaErr}`);
-        logWebRTC("Microphone unavailable. Enable HTTPS + mic permission.");
-        return;
+        logWebRTC("Mic unavailable: sending call in receive-only fallback mode.");
+        constraints = fallbackMediaConstraints();
+        offerOptions = fallbackOfferOptions(mode);
       }
       const inviter = new SIP.Inviter(userAgent, targetUri, {
         extraHeaders: targetHost ? [`X-Callture-Target-Host: ${targetHost}`] : [],
         sessionDescriptionHandlerOptions: {
-          constraints: mediaConstraints(mode),
+          constraints,
+          offerOptions,
           localMediaStream: stream || undefined,
         },
       });
       activeSession = inviter;
-      bindSessionState(inviter, "outgoing");
+      bindSessionState(inviter, "outgoing", mode);
       await inviter.invite();
       if (targetHost) {
         logWebRTC(`Target host header: ${targetHost}`);
@@ -410,6 +503,7 @@
       logWebRTC(`Calling ${targetUri.toString()} (${mode})`);
     } catch (err) {
       logWebRTC(`Call failed: ${err}`);
+      resetAudioCallButtonAfterMinDialing(1200);
     }
   }
 
@@ -433,9 +527,11 @@
       }
       const localVideo = document.getElementById("local-video");
       if (localVideo) localVideo.srcObject = null;
+      resetAudioCallButton();
       logWebRTC("Hangup sent.");
     } catch (err) {
       logWebRTC(`Hangup error: ${err}`);
+      resetAudioCallButton();
     }
   }
 
