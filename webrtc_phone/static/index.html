@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebRTC Phone – FreeSWITCH</title>
+  <link rel="stylesheet" href="css/phone.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jssip/3.10.1/jssip.min.js"
+          integrity="sha512-TjBLlFaExZsWcadaLMOd+2dDGTLelKCQi+8HVaJeyLCqYB7GBaBJerYw8qGUiVBwoXpOcX+fmKmCAn5Pu7Nog=="
+          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- ======== Settings Panel (collapsible) ======== -->
+    <div id="settings-panel" class="panel settings-panel">
+      <div class="panel-header" onclick="toggleSettings()">
+        <span class="panel-icon">⚙</span>
+        <span>Connection Settings</span>
+        <span id="settings-chevron" class="chevron open">▼</span>
+      </div>
+      <div id="settings-body" class="panel-body">
+        <label>WebSocket URL
+          <input id="ws-url" type="text" placeholder="wss://fs.example.com:7443" value="wss://127.0.0.1:7443" />
+        </label>
+        <label>SIP Domain / Realm
+          <input id="sip-domain" type="text" placeholder="fs.example.com" value="127.0.0.1" />
+        </label>
+        <label>Extension / Username
+          <input id="sip-user" type="text" placeholder="1001" value="1001" />
+        </label>
+        <label>Password
+          <input id="sip-pass" type="password" placeholder="password" />
+        </label>
+        <label>Display Name
+          <input id="display-name" type="text" placeholder="Agent 1001" value="Agent" />
+        </label>
+        <div class="setting-row">
+          <label class="inline"><input id="ice-stun" type="checkbox" checked /> Use public STUN</label>
+          <label>STUN/TURN
+            <input id="stun-url" type="text" placeholder="stun:stun.l.google.com:19302" value="stun:stun.l.google.com:19302" />
+          </label>
+        </div>
+        <button id="btn-connect" class="btn btn-primary" onclick="connectPhone()">Connect</button>
+        <button id="btn-disconnect" class="btn btn-danger hidden" onclick="disconnectPhone()">Disconnect</button>
+      </div>
+    </div>
+
+    <!-- ======== Status Bar ======== -->
+    <div id="status-bar">
+      <span id="reg-indicator" class="indicator offline"></span>
+      <span id="reg-status">Not connected</span>
+    </div>
+
+    <!-- ======== Phone Body ======== -->
+    <div id="phone-body">
+      <!-- Call display -->
+      <div id="call-display">
+        <div id="call-info" class="hidden">
+          <div id="call-direction" class="call-direction"></div>
+          <div id="call-remote" class="call-remote"></div>
+          <div id="call-timer" class="call-timer">00:00</div>
+          <div id="call-state" class="call-state"></div>
+        </div>
+        <input id="dial-input" type="tel" placeholder="Enter number…" autocomplete="off" />
+      </div>
+
+      <!-- Dialpad -->
+      <div id="dialpad">
+        <button class="key" onclick="pressKey('1')"><span class="digit">1</span><span class="sub">&nbsp;</span></button>
+        <button class="key" onclick="pressKey('2')"><span class="digit">2</span><span class="sub">ABC</span></button>
+        <button class="key" onclick="pressKey('3')"><span class="digit">3</span><span class="sub">DEF</span></button>
+        <button class="key" onclick="pressKey('4')"><span class="digit">4</span><span class="sub">GHI</span></button>
+        <button class="key" onclick="pressKey('5')"><span class="digit">5</span><span class="sub">JKL</span></button>
+        <button class="key" onclick="pressKey('6')"><span class="digit">6</span><span class="sub">MNO</span></button>
+        <button class="key" onclick="pressKey('7')"><span class="digit">7</span><span class="sub">PQRS</span></button>
+        <button class="key" onclick="pressKey('8')"><span class="digit">8</span><span class="sub">TUV</span></button>
+        <button class="key" onclick="pressKey('9')"><span class="digit">9</span><span class="sub">WXYZ</span></button>
+        <button class="key" onclick="pressKey('*')"><span class="digit">*</span><span class="sub">&nbsp;</span></button>
+        <button class="key" onclick="pressKey('0')"><span class="digit">0</span><span class="sub">+</span></button>
+        <button class="key" onclick="pressKey('#')"><span class="digit">#</span><span class="sub">&nbsp;</span></button>
+      </div>
+
+      <!-- Call action buttons -->
+      <div id="call-actions">
+        <button id="btn-call" class="btn btn-call" onclick="makeCall()" title="Call">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="#fff" d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.01-.24 11.36 11.36 0 0 0 3.58.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11.36 11.36 0 0 0 .57 3.58 1 1 0 0 1-.24 1.01l-2.2 2.2Z"/></svg>
+        </button>
+        <button id="btn-answer" class="btn btn-call hidden" onclick="answerCall()" title="Answer">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="#fff" d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.01-.24 11.36 11.36 0 0 0 3.58.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11.36 11.36 0 0 0 .57 3.58 1 1 0 0 1-.24 1.01l-2.2 2.2Z"/></svg>
+        </button>
+        <button id="btn-hangup" class="btn btn-hangup hidden" onclick="hangupCall()" title="Hang up">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="#fff" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9a11.3 11.3 0 0 0-2.72 1.87.96.96 0 0 1-.67.28c-.26 0-.51-.1-.71-.29L.29 13.13a.99.99 0 0 1 0-1.41A16.97 16.97 0 0 1 12 7c4.56 0 8.73 1.79 11.71 4.71a.99.99 0 0 1 0 1.41l-2.45 2.45a.99.99 0 0 1-.71.29.96.96 0 0 1-.67-.28 11.3 11.3 0 0 0-2.72-1.87.99.99 0 0 1-.56-.9v-3.1A15.03 15.03 0 0 0 12 9Z"/></svg>
+        </button>
+        <button id="btn-reject" class="btn btn-hangup hidden" onclick="rejectCall()" title="Reject">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="#fff" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9a11.3 11.3 0 0 0-2.72 1.87.96.96 0 0 1-.67.28c-.26 0-.51-.1-.71-.29L.29 13.13a.99.99 0 0 1 0-1.41A16.97 16.97 0 0 1 12 7c4.56 0 8.73 1.79 11.71 4.71a.99.99 0 0 1 0 1.41l-2.45 2.45a.99.99 0 0 1-.71.29.96.96 0 0 1-.67-.28 11.3 11.3 0 0 0-2.72-1.87.99.99 0 0 1-.56-.9v-3.1A15.03 15.03 0 0 0 12 9Z"/></svg>
+        </button>
+      </div>
+
+      <!-- In-call controls -->
+      <div id="incall-controls" class="hidden">
+        <button id="btn-mute" class="ctrl-btn" onclick="toggleMute()" title="Mute">
+          <svg id="icon-mic" viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+          <span>Mute</span>
+        </button>
+        <button id="btn-hold" class="ctrl-btn" onclick="toggleHold()" title="Hold">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 19h4V5H6v14Zm8-14v14h4V5h-4Z"/></svg>
+          <span>Hold</span>
+        </button>
+        <button id="btn-transfer" class="ctrl-btn" onclick="initiateTransfer()" title="Transfer">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M18 16h-2v-1c0-1.1-.9-2-2-2H8v-2h6c1.1 0 2-.9 2-2V8h2l-4-4-4 4h2v1H6c-1.1 0-2 .9-2 2v1H2l4 4 4-4H8v-1h6v1c0 1.1.9 2 2 2v1h-2l4 4 4-4Z"/></svg>
+          <span>Transfer</span>
+        </button>
+        <button id="btn-dtmf-toggle" class="ctrl-btn" onclick="toggleDTMFPad()" title="Keypad">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 19a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm-6-6a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM6 7a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM6 1a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"/></svg>
+          <span>Keypad</span>
+        </button>
+      </div>
+
+      <!-- Transfer dialog -->
+      <div id="transfer-dialog" class="hidden">
+        <div class="transfer-inner">
+          <h4>Transfer call</h4>
+          <input id="transfer-target" type="tel" placeholder="Transfer to…" />
+          <div class="transfer-btns">
+            <button class="btn btn-primary btn-sm" onclick="executeTransfer(false)">Blind</button>
+            <button class="btn btn-secondary btn-sm" onclick="executeTransfer(true)">Attended</button>
+            <button class="btn btn-sm" onclick="cancelTransfer()">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== Call History ======== -->
+    <div id="history-panel" class="panel">
+      <div class="panel-header" onclick="toggleHistory()">
+        <span class="panel-icon">📋</span>
+        <span>Call History</span>
+        <span id="history-chevron" class="chevron">▶</span>
+      </div>
+      <div id="history-body" class="panel-body collapsed">
+        <ul id="history-list"></ul>
+        <div id="history-empty" class="muted">No calls yet</div>
+      </div>
+    </div>
+
+    <!-- ======== Queue Dashboard (live from API) ======== -->
+    <div id="dashboard-panel" class="panel">
+      <div class="panel-header" onclick="toggleDashboard()">
+        <span class="panel-icon">📊</span>
+        <span>Queue Dashboard</span>
+        <span id="dashboard-chevron" class="chevron">▶</span>
+      </div>
+      <div id="dashboard-body" class="panel-body collapsed">
+        <div id="dashboard-content">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remote audio element -->
+  <audio id="remote-audio" autoplay></audio>
+  <!-- Ringtone -->
+  <audio id="ringtone" loop preload="auto">
+    <source src="data:audio/wav;base64," type="audio/wav" />
+  </audio>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
