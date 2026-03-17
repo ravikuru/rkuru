@@ -104,6 +104,7 @@ platform = ContactCenterPlatform()
 security_autoblock_stop = threading.Event()
 security_autoblock_thread: threading.Thread | None = None
 WEBRTC_UPSTREAM_LAST_GOOD: str | None = None
+WEBRTC_ACTIVE_CLIENTS: dict[str, WebSocket] = {}
 
 
 def db_conn() -> sqlite3.Connection:
@@ -120,6 +121,24 @@ def request_ip(request: Request) -> str:
     if xreal:
         return xreal
     return request.client.host if request.client else ""
+
+
+def request_ip_from_scope(scope: dict[str, Any]) -> str:
+    headers = {
+        (k.decode("latin-1").lower() if isinstance(k, (bytes, bytearray)) else str(k).lower()):
+        (v.decode("latin-1") if isinstance(v, (bytes, bytearray)) else str(v))
+        for k, v in (scope.get("headers") or [])
+    }
+    xff = (headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        return xff.split(",", 1)[0].strip()
+    xreal = (headers.get("x-real-ip") or "").strip()
+    if xreal:
+        return xreal
+    client = scope.get("client") or ()
+    if isinstance(client, tuple) and client:
+        return str(client[0] or "")
+    return ""
 
 
 def suspicious_request_reason(request: Request) -> str | None:
@@ -2249,9 +2268,19 @@ async def webrtc_ws_proxy(websocket: WebSocket):
     global WEBRTC_UPSTREAM_LAST_GOOD
     session = websocket.scope.get("session") or {}
     session_user = session.get("user")
+    source_ip = request_ip_from_scope(websocket.scope) or (websocket.client.host if websocket.client else "unknown")
+    client_key = f"user:{session_user}" if session_user else f"ip:{source_ip}"
 
     proxy_id = secrets.token_hex(4)
+    previous_ws = WEBRTC_ACTIVE_CLIENTS.get(client_key)
+    if previous_ws is not None and previous_ws is not websocket:
+        try:
+            print(f"WebRTC proxy[{proxy_id}] replacing existing socket key={client_key}")
+            await previous_ws.close(code=1012, reason="Replaced by newer WebRTC socket")
+        except Exception:
+            pass
     await websocket.accept(subprotocol="sip")
+    WEBRTC_ACTIVE_CLIENTS[client_key] = websocket
     print(
         f"WebRTC proxy[{proxy_id}] accepted client={websocket.client} "
         f"host={websocket.url.hostname} session_user={session_user or '-'}"
@@ -2356,6 +2385,8 @@ async def webrtc_ws_proxy(websocket: WebSocket):
     except Exception as exc:
         print(f"WebRTC proxy[{proxy_id}] runtime error: {exc}")
     finally:
+        if WEBRTC_ACTIVE_CLIENTS.get(client_key) is websocket:
+            WEBRTC_ACTIVE_CLIENTS.pop(client_key, None)
         if upstream is not None:
             try:
                 await upstream.close()
