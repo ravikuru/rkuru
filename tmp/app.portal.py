@@ -2209,7 +2209,7 @@ def webrtc_phone_page(request: Request):
         extensions = conn.execute(
             "SELECT extension, display_name FROM vpbx_extensions ORDER BY extension"
         ).fetchall()
-    webrtc_ws_url = "ws://204.29.213.58:8088/webrtc/ws"
+    webrtc_ws_url = "wss://204.29.213.58/webrtc/ws"
     webrtc_wss_url = "wss://204.29.213.58/webrtc/ws"
     return templates.TemplateResponse(
         "webrtcphone.html",

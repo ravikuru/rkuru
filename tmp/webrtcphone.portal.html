@@ -412,16 +412,7 @@
       logWebRTC(`Register failed: ${err}`);
       setRegisterStatus("Register Failed", "webrtc-status-error");
       if (allowFallback && val("webrtc-transport") === "wss") {
-        const wsUrl = val("webrtc-ws-url");
-        const isHttpsPage = window.location.protocol === "https:";
-        if (wsUrl && !isHttpsPage) {
-          const transportSelect = document.getElementById("webrtc-transport");
-          if (transportSelect) transportSelect.value = "ws";
-          logWebRTC(`Auto-fallback: retrying via ws (${wsUrl})`);
-          userAgent = null;
-          registerer = null;
-          return registerWebRTC(false);
-        }
+        logWebRTC("WSS failed and WS fallback is disabled by configuration.");
       }
       userAgent = null;
       registerer = null;
@@ -459,7 +450,7 @@
       }
       if (!userAgent) {
         logWebRTC("Not registered. Auto-registering before call...");
-        await registerWebRTC(true);
+        await registerWebRTC(false);
         if (!userAgent) {
           logWebRTC("Auto-register failed. Please click Register and retry.");
           resetAudioCallButton();
@@ -565,8 +556,8 @@
     }
     const wsInput = document.getElementById("webrtc-ws-url");
     if (wsInput) {
-      wsInput.value = "ws://204.29.213.58:8088/webrtc/ws";
-      logWebRTC("WS URL forced to ws://204.29.213.58:8088/webrtc/ws");
+      wsInput.value = "wss://204.29.213.58/webrtc/ws";
+      logWebRTC("WS field forced to wss://204.29.213.58/webrtc/ws");
     }
     const wssInput = document.getElementById("webrtc-wss-url");
     if (wssInput) {
@@ -578,7 +569,7 @@
     const btnAudio = document.getElementById("webrtc-audio-call-btn");
     const btnVideo = document.getElementById("webrtc-video-call-btn");
     const btnHangup = document.getElementById("webrtc-hangup-btn");
-    if (btnRegister) btnRegister.addEventListener("click", function () { registerWebRTC(true); });
+    if (btnRegister) btnRegister.addEventListener("click", function () { registerWebRTC(false); });
     if (btnUnregister) btnUnregister.addEventListener("click", unregisterWebRTC);
     if (btnAudio) btnAudio.addEventListener("click", function () { callWebRTC("audio"); });
     if (btnVideo) btnVideo.addEventListener("click", function () { callWebRTC("video"); });
