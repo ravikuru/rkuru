@@ -7,18 +7,24 @@ This is a pure-Python project with **zero external dependencies** (stdlib only).
 ### Running the application
 
 ```bash
+# Queue platform demo (CLI)
 python3 demo.py
+
+# WebRTC phone UI (serves on http://localhost:8080)
+python3 webrtc_phone/server.py --port 8080
 ```
 
-See `README.md` for feature coverage and project structure.
+The phone server also seeds demo queues/agents and exposes a JSON API at `/api/queues`, `/api/agents`, `/api/wallboard/<queue>`, `/api/performance/<queue>`, and `/api/state`.
+
+See `README.md` for full feature coverage, FreeSWITCH configuration, and project structure.
 
 ### Linting
 
 No formal linter is configured in the repo. Use `py_compile` or `pyflakes` for basic checks:
 
 ```bash
-python3 -m py_compile demo.py
-python3 -m pyflakes demo.py queue_platform/
+python3 -m py_compile demo.py webrtc_phone/server.py
+python3 -m pyflakes demo.py queue_platform/ webrtc_phone/
 ```
 
 ### Testing
