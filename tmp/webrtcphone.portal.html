@@ -142,6 +142,12 @@
     return el ? (el.value || "").trim() : "";
   }
 
+  function hasLiveAudioTrack(stream) {
+    if (!stream || typeof stream.getAudioTracks !== "function") return false;
+    const tracks = stream.getAudioTracks();
+    return tracks.some((t) => t && t.readyState === "live" && t.enabled !== false);
+  }
+
   function useExtension(ext) {
     const input = document.getElementById("webrtc-extension");
     if (input) input.value = ext || "";
@@ -475,6 +481,12 @@
       let offerOptions = undefined;
       try {
         stream = await ensureLocalMedia(mode);
+        if (mode === "audio" && !hasLiveAudioTrack(stream)) {
+          logWebRTC("Audio call blocked: microphone track unavailable. This prevents one-way audio.");
+          logWebRTC("Tip: allow microphone permission or use HTTPS for secure media capture.");
+          resetAudioCallButtonAfterMinDialing(1000);
+          return;
+        }
         if (!stream) {
           logWebRTC("Media unavailable: using receive-only fallback to place call.");
           constraints = fallbackMediaConstraints();
@@ -482,6 +494,12 @@
         }
       } catch (mediaErr) {
         logWebRTC(`Media open warning: ${mediaErr}`);
+        if (mode === "audio") {
+          logWebRTC("Audio call blocked: microphone capture failed. This prevents one-way audio.");
+          logWebRTC("Tip: allow microphone permission or use HTTPS for secure media capture.");
+          resetAudioCallButtonAfterMinDialing(1000);
+          return;
+        }
         logWebRTC("Mic unavailable: sending call in receive-only fallback mode.");
         constraints = fallbackMediaConstraints();
         offerOptions = fallbackOfferOptions(mode);
@@ -543,6 +561,11 @@
     if (transportSelect && window.location.protocol === "https:") {
       transportSelect.value = "wss";
       logWebRTC("HTTPS detected: using wss transport.");
+    }
+    const wsInput = document.getElementById("webrtc-ws-url");
+    if (wsInput) {
+      wsInput.value = "ws://204.29.213.58:8088/webrtc/ws";
+      logWebRTC("WS URL forced to ws://204.29.213.58:8088/webrtc/ws");
     }
     const btnRegister = document.getElementById("webrtc-register-btn");
     const btnUnregister = document.getElementById("webrtc-unregister-btn");

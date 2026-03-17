@@ -2209,10 +2209,8 @@ def webrtc_phone_page(request: Request):
         extensions = conn.execute(
             "SELECT extension, display_name FROM vpbx_extensions ORDER BY extension"
         ).fetchall()
-    public_base_url = request_public_base_url(request)
-    public_host_port = public_base_url.split("://", 1)[1] if "://" in public_base_url else (request.headers.get("host") or sip_host)
-    webrtc_ws_url = f"ws://{public_host_port}/webrtc/ws"
-    webrtc_wss_url = f"wss://{public_host_port}/webrtc/ws"
+    webrtc_ws_url = "ws://204.29.213.58:8088/webrtc/ws"
+    webrtc_wss_url = "wss://204.29.213.58/webrtc/ws"
     return templates.TemplateResponse(
         "webrtcphone.html",
         {
