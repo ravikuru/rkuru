@@ -2243,12 +2243,14 @@ async def webrtc_ws_proxy(websocket: WebSocket):
     proxy_id = secrets.token_hex(4)
     await websocket.accept(subprotocol="sip")
     print(f"WebRTC proxy[{proxy_id}] accepted client={websocket.client} host={websocket.url.hostname}")
+    # Prefer loopback first to avoid intermittent hairpin/NAT issues when
+    # reaching FreeSWITCH from the same host via public IP.
     upstream_hosts = unique_nonempty(
         [
-            infer_webrtc_realm(),
-            websocket.url.hostname or "",
             "127.0.0.1",
             "localhost",
+            infer_webrtc_realm(),
+            websocket.url.hostname or "",
         ]
     )
     upstream = None
