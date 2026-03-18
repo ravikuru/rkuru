@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import random
 import re
+import socket
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote_plus, unquote_plus
@@ -178,6 +180,33 @@ _ENDPOINT_DB_HINTS: dict[str, str] = {
     "getratesv306.asp": "TelcanSwitch/TelcanCalls",
 }
 
+
+def _is_private_ip(ip_text: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip_text).is_private
+    except Exception:
+        return False
+
+
+def _discover_private_addr() -> str:
+    # Prefer RFC1918/private addresses from local interfaces.
+    for candidate in socket.gethostbyname_ex(socket.gethostname())[2]:
+        if _is_private_ip(candidate):
+            return candidate
+
+    # Fallback to route-based detection.
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        udp.connect(("8.8.8.8", 80))
+        candidate = udp.getsockname()[0]
+        if _is_private_ip(candidate):
+            return candidate
+    except Exception:
+        pass
+    finally:
+        udp.close()
+    return ""
+
 app = FastAPI(title=APP_NAME)
 logger = logging.getLogger("vpbx-pybridge")
 logging.basicConfig(level=os.getenv("VPBX_LOG_LEVEL", "INFO").upper())
@@ -232,12 +261,19 @@ def _get_local_addr(request: Request) -> str:
     forced = os.getenv("VPBX_LOCAL_ADDR", "").strip()
     if forced:
         return forced
-    host = request.headers.get("x-forwarded-host", "").strip()
+    discovered = _discover_private_addr()
+    if discovered:
+        return discovered
+    host = request.headers.get("host", "").strip()
     if host:
-        return host.split(":", 1)[0]
-    if request.url.hostname:
-        return request.url.hostname
+        host = host.split(":", 1)[0]
+        if _is_private_ip(host):
+            return host
     return "127.0.0.1"
+
+
+def _private_base_url(request: Request) -> str:
+    return f"http://{_get_local_addr(request)}:8091"
 
 
 def _db_host(db_key: str) -> str:
@@ -2723,10 +2759,7 @@ async def _handle_synch_telcan_voip(request: Request, endpoint: str, _: Backgrou
 async def _handle_synch_telcan_voip_async(request: Request, endpoint: str, background_tasks: BackgroundTasks) -> JSONResponse:
     query = _param(request, "query").strip()
     caller_ip = (request.client.host if request.client else "") or ""
-    target = (
-        "http://127.0.0.1:8091/VPBX/SynchTelcanVoIP.asp"
-        f"?query={quote_plus(query)}&caller_ip={quote_plus(caller_ip)}"
-    )
+    target = f"{_private_base_url(request)}/VPBX/SynchTelcanVoIP.asp?query={quote_plus(query)}&caller_ip={quote_plus(caller_ip)}"
     background_tasks.add_task(_fire_and_forget, target)
     return _json_response({"ResultID": 1, "Endpoint": endpoint, "ForwardTo": "SynchTelcanVoIP.asp"})
 
@@ -2906,7 +2939,7 @@ async def _handle_voip_ext_info_get(request: Request, endpoint: str, _: Backgrou
 
             if inphonenum in {"711", "911"}:
                 monitor_url = (
-                    "http://127.0.0.1:8091/VPBX/VoIPCallMonitor.asp"
+                    f"{_private_base_url(request)}/VPBX/VoIPCallMonitor.asp"
                     f"?ani={quote_plus(callerid)}&dnis={quote_plus(inphonenum)}"
                     f"&CallChannelID={quote_plus(channel)}&CallerIP={quote_plus(serverip)}"
                     f"&Context={quote_plus(context)}&SipID={quote_plus(sip_call_id)}"
@@ -3202,9 +3235,16 @@ async def _handle_save_cdr_v5(request: Request, endpoint: str, _: BackgroundTask
 
 
 async def _handle_async_forward(request: Request, sync_endpoint: str, background_tasks: BackgroundTasks) -> JSONResponse:
-    url = str(request.url.replace(path=f"/VPBX/{sync_endpoint}"))
+    url = f"{_private_base_url(request)}/VPBX/{sync_endpoint}"
     background_tasks.add_task(_fire_and_forget, url)
-    return _json_response({"ResultID": 1, "Message": "Async request queued", "ForwardTo": sync_endpoint})
+    return _json_response(
+        {
+            "ResultID": 1,
+            "Message": "Async request queued",
+            "ForwardTo": sync_endpoint,
+            "ForwardURL": url,
+        }
+    )
 
 
 HANDLERS: dict[str, Callable[[Request, str, BackgroundTasks], Awaitable[JSONResponse]]] = {
