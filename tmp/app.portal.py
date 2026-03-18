@@ -1387,7 +1387,44 @@ def webrtc_local_target_host_pattern(local_domain: str) -> str:
     return "(?:" + "|".join(re.escape(host) for host in safe_hosts) + ")"
 
 
+def write_freeswitch_conf_file(relative_path: str, content: str) -> None:
+    rel = (relative_path or "").strip().lstrip("/")
+    if not rel:
+        raise ValueError("relative_path is required")
+    roots = [Path("/usr/local/freeswitch/conf"), Path("/etc/freeswitch")]
+    targets: list[Path] = []
+    for root in roots:
+        probe = subprocess.run(
+            ["sudo", "test", "-d", str(root)],
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode == 0:
+            targets.append(root / rel)
+    if not targets:
+        targets.append(roots[0] / rel)
+    last_error: Exception | None = None
+    wrote = False
+    for path in targets:
+        try:
+            write_root_file(str(path), content)
+            wrote = True
+        except Exception as exc:
+            last_error = exc
+    if not wrote:
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Unable to write FreeSWITCH config file: {rel}")
+
+
 def write_root_file(path: str, content: str) -> None:
+    parent = str(Path(path).parent)
+    subprocess.run(
+        ["sudo", "mkdir", "-p", parent],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     subprocess.run(
         ["sudo", "/usr/bin/tee", path],
         input=content,
@@ -1736,8 +1773,7 @@ def sync_extension_to_freeswitch(extension: str, display_name: str, sip_password
         </include>
         """
     )
-    path = f"/usr/local/freeswitch/conf/directory/default/{extension}.xml"
-    write_root_file(path, xml)
+    write_freeswitch_conf_file(f"directory/default/{extension}.xml", xml)
 
 
 def sync_fax_inbound_dialplan() -> None:
@@ -1768,7 +1804,7 @@ def sync_fax_inbound_dialplan() -> None:
         )
 
     xml = "<include>\n" + ("\n".join(blocks) if blocks else "  <!-- no fax inbound routes configured -->\n") + "</include>\n"
-    write_root_file("/usr/local/freeswitch/conf/dialplan/public/30_callture_fax_inbound.xml", xml)
+    write_freeswitch_conf_file("dialplan/public/30_callture_fax_inbound.xml", xml)
     fs_cli("reloadxml")
 
 
@@ -1844,7 +1880,7 @@ def sync_conference_dialplan() -> None:
         )
 
     xml = "<include>\n" + ("\n".join(blocks) if blocks else "  <!-- no conference rooms configured -->\n") + "</include>\n"
-    write_root_file("/usr/local/freeswitch/conf/dialplan/default/96_callture_conference.xml", xml)
+    write_freeswitch_conf_file("dialplan/default/96_callture_conference.xml", xml)
     fs_cli("reloadxml")
 
 
@@ -1909,7 +1945,7 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
         </include>
         """
     )
-    write_root_file("/usr/local/freeswitch/conf/dialplan/default/04_callture_webrtc_internal_bridge.xml", xml)
+    write_freeswitch_conf_file("dialplan/default/04_callture_webrtc_internal_bridge.xml", xml)
     fs_cli("reloadxml")
 
 
@@ -1960,7 +1996,7 @@ def sync_trunks_to_freeswitch() -> None:
         )
 
     xml = "<include>\n" + ("\n".join(gateways) if gateways else "  <!-- no trunks configured -->\n") + "</include>\n"
-    write_root_file("/usr/local/freeswitch/conf/sip_profiles/external/99_callture_trunks.xml", xml)
+    write_freeswitch_conf_file("sip_profiles/external/99_callture_trunks.xml", xml)
     fs_cli("reloadxml")
     fs_cli("sofia profile external rescan")
 
@@ -2073,7 +2109,7 @@ def sync_inbound_routes_dialplan() -> None:
         blocks.append(block)
 
     xml = "<include>\n" + ("\n".join(blocks) if blocks else "  <!-- no inbound routes configured -->\n") + "</include>\n"
-    write_root_file("/usr/local/freeswitch/conf/dialplan/public/05_callture_routes_inbound.xml", xml)
+    write_freeswitch_conf_file("dialplan/public/05_callture_routes_inbound.xml", xml)
     fs_cli("reloadxml")
 
 
@@ -2178,7 +2214,7 @@ def sync_outbound_routes_dialplan() -> None:
         blocks.append(block)
 
     xml = "<include>\n" + ("\n".join(blocks) if blocks else "  <!-- no outbound routes configured -->\n") + "</include>\n"
-    write_root_file("/usr/local/freeswitch/conf/dialplan/default/97_callture_outbound_routes.xml", xml)
+    write_freeswitch_conf_file("dialplan/default/97_callture_outbound_routes.xml", xml)
     fs_cli("reloadxml")
 
 
