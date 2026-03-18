@@ -5250,6 +5250,70 @@ def security_unblock_ip(
     return RedirectResponse(url=security_redirect_url(return_to, f"Unblocked {ip_text}"), status_code=303)
 
 
+@app.post("/security/block", response_class=HTMLResponse)
+def security_block_ip(
+    request: Request,
+    ip_address: str = Form(...),
+    reason: str = Form(""),
+    return_to: str = Form("security"),
+):
+    user, denied = require_admin_or_redirect(request)
+    if denied:
+        return denied
+
+    ip_text = normalize_ipv4(ip_address)
+    if not ip_text:
+        return RedirectResponse(url=security_redirect_url(return_to, "Invalid IP address"), status_code=303)
+    try:
+        if ipaddress.ip_address(ip_text).version != 4:
+            return RedirectResponse(
+                url=security_redirect_url(return_to, "Only IPv4 addresses are supported for firewall block"),
+                status_code=303,
+            )
+    except ValueError:
+        return RedirectResponse(url=security_redirect_url(return_to, "Invalid IP address"), status_code=303)
+
+    reason_text = (reason or "").strip()[:255] or "Manual firewall block by admin"
+    if not iptables_block_ip(ip_text):
+        log_system_security_event(
+            "ip_block_failed_by_admin",
+            severity="medium",
+            ip_address=ip_text,
+            details=f"Block failed for {ip_text} requested by {user}",
+        )
+        return RedirectResponse(url=security_redirect_url(return_to, f"Failed to block {ip_text} on firewall"), status_code=303)
+
+    now = datetime.now(UTC).isoformat()
+    removed_from_whitelist = False
+    with closing(db_conn()) as conn:
+        row = conn.execute(
+            "SELECT active FROM whitelist_ips WHERE ip_address = ? LIMIT 1",
+            (ip_text,),
+        ).fetchone()
+        if row is not None and int(row["active"] or 0) == 1:
+            conn.execute(
+                "UPDATE whitelist_ips SET active = 0, updated_at = ? WHERE ip_address = ?",
+                (now, ip_text),
+            )
+            removed_from_whitelist = True
+        conn.commit()
+    mark_ip_blocked(ip_text, reason_text, "admin_manual_block", now)
+    log_system_security_event(
+        "ip_blocked_by_admin",
+        severity="high",
+        ip_address=ip_text,
+        details=(
+            f"Blocked by {user}; reason={reason_text}; "
+            f"removed_from_whitelist={'yes' if removed_from_whitelist else 'no'}"
+        ),
+    )
+
+    message = f"Blocked {ip_text} on firewall"
+    if removed_from_whitelist:
+        message += " (removed from whitelist)"
+    return RedirectResponse(url=security_redirect_url(return_to, message), status_code=303)
+
+
 @app.post("/security/whitelist/add", response_class=HTMLResponse)
 def security_whitelist_add(
     request: Request,

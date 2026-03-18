@@ -28,6 +28,12 @@
 <div class="card">
   <h3>Status Security - Blocked IPs</h3>
   <p class="hint">Admin (rkuru) can unblock or move an IP to whitelist directly from Status.</p>
+  <form method="post" action="/security/block" class="grid-form" style="margin-bottom:10px;">
+    <label>IP Address<input name="ip_address" placeholder="185.223.152.197" required /></label>
+    <label>Reason<input name="reason" placeholder="Manual scanner block" /></label>
+    <input type="hidden" name="return_to" value="dashboard" />
+    <button type="submit">Block IP</button>
+  </form>
   <table>
     <tr><th>IP</th><th>Reason</th><th>Source</th><th>Count</th><th>Last Blocked</th><th>Actions</th></tr>
     {% for row in blocked_ips %}
@@ -78,6 +84,12 @@
           <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
           <input type="hidden" name="return_to" value="dashboard" />
           <button type="submit">Remove</button>
+        </form>
+        <form method="post" action="/security/block" style="margin-top:6px;">
+          <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
+          <input type="hidden" name="return_to" value="dashboard" />
+          <input type="hidden" name="reason" value="Blocked from whitelist by admin" />
+          <button type="submit">Block</button>
         </form>
       </td>
     </tr>

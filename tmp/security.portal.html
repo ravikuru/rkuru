@@ -7,6 +7,16 @@
 <p>Showing latest {{ limit }} security events (suspicious requests, failed logins, denied access, and probes).</p>
 
 <h2>Blocked IPs (auto-block)</h2>
+<form method="post" action="/security/block" class="grid-form" style="margin-bottom:14px;">
+  <label>IP Address
+    <input name="ip_address" placeholder="185.223.152.197" required />
+  </label>
+  <label>Reason (optional)
+    <input name="reason" placeholder="Manual scanner block" />
+  </label>
+  <input type="hidden" name="return_to" value="security" />
+  <button type="submit">Block IP on Firewall</button>
+</form>
 <form method="get" action="/security" style="margin-bottom:12px;">
   <input type="hidden" name="limit" value="{{ limit }}" />
   <label for="blocked_ip"><strong>Search IP:</strong></label>
@@ -118,6 +128,12 @@
           <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
           <input type="hidden" name="return_to" value="security" />
           <button type="submit">Remove Whitelist</button>
+        </form>
+        <form method="post" action="/security/block" style="margin-top:6px;">
+          <input type="hidden" name="ip_address" value="{{ row.ip_address }}" />
+          <input type="hidden" name="return_to" value="security" />
+          <input type="hidden" name="reason" value="Blocked from whitelist by admin" />
+          <button type="submit">Block</button>
         </form>
       </td>
     </tr>
