@@ -52,6 +52,7 @@ var oldext = false;
 var gotopanel = false;
 var isIncomingCall = false;
 var isOutboundCall = false;
+var currentDialConfig = null;
 
 var dtmf_options = {
   'duration': 100,
@@ -116,6 +117,36 @@ function onCancelled() {
     var span = document.getElementById('calling');
     $("#calling_input").val("");
     span.innerText = "...";
+}
+
+function normalizeDialAttempt(rawInput) {
+    var raw = (rawInput || "").toString().trim();
+    if (raw === "") {
+        return null;
+    }
+
+    // Allow direct SIP URI dialing such as sip:4163501959@204.29.213.75.
+    var sipUriMatch = raw.match(/^sips?:([^@\s;>]+)@([^;\s>]+)$/i);
+    if (sipUriMatch) {
+        var remoteUser = sipUriMatch[1];
+        var remoteHost = sipUriMatch[2];
+        if (remoteUser && remoteHost) {
+            return {
+                requestTarget: remoteUser,
+                normalizedExt: remoteUser,
+                display: raw,
+                extraHeaders: ["X-Callture-Target-Host: " + remoteHost]
+            };
+        }
+    }
+
+    var normalized = raw.replace(/#/g, "_");
+    return {
+        requestTarget: normalized,
+        normalizedExt: normalized,
+        display: raw,
+        extraHeaders: []
+    };
 }
 
 function onTerminated() {
@@ -481,7 +512,13 @@ function docall() {
     isIncomingCall = false;
     isOutboundCall = true;
 
-    cur_call = ua.invite($("#ext").val(), {
+    var dialConfig = currentDialConfig || normalizeDialAttempt($("#ext").val());
+    if (!dialConfig) {
+        return;
+    }
+
+    cur_call = ua.invite(dialConfig.requestTarget, {
+        extraHeaders: dialConfig.extraHeaders,
         media: {
             constraints: {
                 audio: {
@@ -525,7 +562,7 @@ function docall() {
     cur_call.once('cancel', onTerminated.bind(cur_call));
 
     var span = document.getElementById('speakingwith');
-    var txt = document.createTextNode($("#ext").val());
+    var txt = document.createTextNode(dialConfig.display);
     span.innerText = txt.textContent;
 }
 
@@ -559,16 +596,18 @@ $("#signinctrlbtn").click(function() {
 
 
 $("#callbtn").click(function() {
-    if ($("#ext").val()) {
-        var regex1 = /#/g;
-        var new_ext = $("#ext").val().replace(regex1, "_");
-        $("#ext").val(new_ext);
-	oldext=$("#ext").val();
-        docall();
+    var dialConfig = normalizeDialAttempt($("#ext").val());
+    if (!dialConfig) {
+        return;
     }
+    currentDialConfig = dialConfig;
+    $("#ext").val(dialConfig.normalizedExt);
+    oldext = dialConfig.display;
+    docall();
 });
 
 $("#delcallbtn").click(function() {
+    currentDialConfig = null;
     $("#ext").val("");
     $("#calling_input").val("");
     var span = document.getElementById('calling');
@@ -579,6 +618,7 @@ $("#delcallbtn").click(function() {
 
 
 $("#hangupbtn").click(function() {
+    currentDialConfig = null;
     if (cur_call) {
         cur_call.terminate();
         cur_call = null;
