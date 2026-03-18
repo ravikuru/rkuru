@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Auto-block SIP scanners that attempt invalid (non-10-digit) usernames.
+Auto-block SIP scanners that use non-North-American patterns.
 
-This script tails FreeSWITCH logs, tracks repeated invalid REGISTER attempts,
-and inserts iptables DROP rules for offending source IPs.
+This script tails FreeSWITCH logs, tracks invalid REGISTER user IDs and
+invalid INVITE destination user parts, then inserts iptables DROP rules for
+offending source IPs.
 """
 
 from __future__ import annotations
@@ -19,7 +20,9 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Auto-block invalid SIP REGISTER scans")
+    p = argparse.ArgumentParser(
+        description="Auto-block invalid SIP REGISTER/INVITE scans"
+    )
     p.add_argument(
         "--log-file",
         default="/usr/local/freeswitch/log/freeswitch.log",
@@ -33,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--realm",
         default="204.29.213.58",
-        help="Realm/IP to match inside Can't find user log entries",
+        help="Realm/IP to match in FreeSWITCH log entries",
     )
     p.add_argument(
         "--window-seconds",
@@ -44,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--threshold",
         type=int,
-        default=4,
+        default=1,
         help="Block IP after this many invalid attempts in window",
     )
     p.add_argument(
@@ -169,6 +172,20 @@ def prune_hits(ip_hits: dict[str, list[float]], now: float, window: int) -> dict
     return out
 
 
+def is_nanp_identifier(identifier: str) -> bool:
+    """
+    Accept North-American style destinations:
+      - 10 digits, NXXNXXXXXX (first digit 2-9)
+      - 11 digits with leading 1, 1NXXNXXXXXX
+    """
+    digits = re.sub(r"\D+", "", (identifier or "").strip())
+    if len(digits) == 10:
+        return digits[0] in "23456789"
+    if len(digits) == 11:
+        return digits[0] == "1" and digits[1] in "23456789"
+    return False
+
+
 def main() -> int:
     args = parse_args()
     log_path = Path(args.log_file)
@@ -190,9 +207,15 @@ def main() -> int:
 
     # Example line:
     # ... sofia_reg.c:3210 Can't find user [101@204.29.213.58] from 5.39.101.60
-    regex = re.compile(
+    regex_register = re.compile(
         rf"Can't find user \[([^@\]]+)@{re.escape(args.realm)}\] from "
         r"([0-9]{1,3}(?:\.[0-9]{1,3}){3})"
+    )
+    # Example line:
+    # ... sofia/internal/10001@204.29.213.58 receiving invite from 172.110.223.66:58798
+    regex_invite = re.compile(
+        rf"sofia/(?:internal|external)/([^@\s]+)@{re.escape(args.realm)} "
+        r"receiving invite from ([0-9]{1,3}(?:\.[0-9]{1,3}){3}):"
     )
 
     ip_hits = prune_hits(
@@ -205,23 +228,31 @@ def main() -> int:
     )
     blocked_ips = set(str(ip) for ip in (state.get("blocked_ips") or []))
 
-    invalid_seen = 0
+    invalid_register_seen = 0
+    invalid_invite_seen = 0
     for line in lines:
-        m = regex.search(line)
-        if not m:
+        reg = regex_register.search(line)
+        if reg:
+            user = reg.group(1).strip()
+            ip = reg.group(2).strip()
+            if is_ip_allowed(ip, whitelist):
+                continue
+            if is_nanp_identifier(user):
+                continue
+            ip_hits.setdefault(ip, []).append(now)
+            invalid_register_seen += 1
             continue
-        user = m.group(1).strip()
-        ip = m.group(2).strip()
 
-        # Ignore valid 10-digit attempts.
-        if user.isdigit() and len(user) == 10:
-            continue
-        # Ignore local/private/whitelisted sources.
-        if is_ip_allowed(ip, whitelist):
-            continue
-
-        ip_hits.setdefault(ip, []).append(now)
-        invalid_seen += 1
+        inv = regex_invite.search(line)
+        if inv:
+            destination = inv.group(1).strip()
+            ip = inv.group(2).strip()
+            if is_ip_allowed(ip, whitelist):
+                continue
+            if is_nanp_identifier(destination):
+                continue
+            ip_hits.setdefault(ip, []).append(now)
+            invalid_invite_seen += 1
 
     ip_hits = prune_hits(ip_hits, now, args.window_seconds)
 
@@ -249,7 +280,8 @@ def main() -> int:
     save_state(state_path, state)
 
     print(
-        f"processed_lines={len(lines)} invalid_seen={invalid_seen} "
+        f"processed_lines={len(lines)} invalid_register_seen={invalid_register_seen} "
+        f"invalid_invite_seen={invalid_invite_seen} "
         f"tracked_ips={len(ip_hits)} blocked_total={len(blocked_ips)} "
         f"new_blocks={new_blocks}"
     )

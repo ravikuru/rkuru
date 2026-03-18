@@ -1,5 +1,5 @@
 [Unit]
-Description=Block invalid SIP REGISTER scanners (non-10-digit usernames)
+Description=Block non-NANP SIP REGISTER/INVITE scanners
 After=network-online.target
 
 [Service]
