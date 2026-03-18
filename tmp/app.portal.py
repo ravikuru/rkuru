@@ -47,6 +47,10 @@ WEBRTC_DEFAULT_PASSWORD = "telcan2008!"
 WEBRTC_OUTBOUND_IDENTITY_DEFAULT = os.getenv("WEBRTC_OUTBOUND_IDENTITY_DEFAULT", "6472585272").strip()
 REGISTERED_FIRST_OUTBOUND_TRUNK = os.getenv("CC_REGISTERED_FIRST_OUTBOUND_TRUNK", "kamailio6932").strip() or "kamailio6932"
 NANP_10_OR_11_DIGIT_EXPR = r"^(1?[2-9]\d{9})$"
+WEBRTC_LOCAL_TARGET_HOSTS = os.getenv(
+    "CC_WEBRTC_LOCAL_TARGET_HOSTS",
+    "204.29.213.58,ai4.callture.com,127.0.0.1,localhost",
+).strip()
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -1374,6 +1378,15 @@ def unique_nonempty(items: list[str]) -> list[str]:
     return out
 
 
+def webrtc_local_target_host_pattern(local_domain: str) -> str:
+    configured = [(part or "").strip() for part in WEBRTC_LOCAL_TARGET_HOSTS.split(",")]
+    hosts = unique_nonempty([local_domain, *configured])
+    safe_hosts = [host for host in hosts if re.fullmatch(r"[A-Za-z0-9.-]+", host)]
+    if not safe_hosts:
+        safe_hosts = [local_domain]
+    return "(?:" + "|".join(re.escape(host) for host in safe_hosts) + ")"
+
+
 def write_root_file(path: str, content: str) -> None:
     subprocess.run(
         ["sudo", "/usr/bin/tee", path],
@@ -1841,7 +1854,7 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
     # 2) If target host is remote, route out via external profile.
     # 3) If target host is local domain and 10-digit, bridge to local user.
     local_domain = infer_webrtc_realm()
-    local_domain_expr = re.escape(local_domain)
+    local_domain_expr = webrtc_local_target_host_pattern(local_domain)
     outbound_identity = re.sub(r"\D+", "", WEBRTC_OUTBOUND_IDENTITY_DEFAULT) or WEBRTC_DEFAULT_EXTENSION
     outbound_from_uri = f"sip:{outbound_identity}@{local_domain}"
     outbound_trunk = re.sub(r"[^0-9A-Za-z_.-]", "", REGISTERED_FIRST_OUTBOUND_TRUNK) or "kamailio6932"
