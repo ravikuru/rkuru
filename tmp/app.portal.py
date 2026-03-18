@@ -1890,10 +1890,12 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
                   <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
                   {fallback_prefix_action}
                   {fallback_plus_action}
-                  <action application="log" data="NOTICE callture route: destination=${{destination_number}} try local user ${{callture_target_user}} then trunk {outbound_trunk} target=${{callture_out_target}}"/>
+                  <action application="log" data="NOTICE callture route step1 local: destination=${{destination_number}} user=${{callture_target_user}}"/>
                   <action application="set" data="continue_on_fail=true"/>
                   <action application="set" data="hangup_after_bridge=true"/>
-                  <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}|sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                  <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
+                  <action application="log" data="NOTICE callture route step2 trunk: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
+                  <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
                 </condition>
                 <condition field="destination_number" expression="^(?!1?[2-9]\\d{{9}}$).+">
                   <action application="hangup" data="CALL_REJECTED"/>
@@ -2115,10 +2117,12 @@ def sync_outbound_routes_dialplan() -> None:
                     <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
                     {fallback_prefix_action}
                     {fallback_plus_action}
-                    <action application="log" data="NOTICE callture route: destination=${{destination_number}} try local user ${{callture_target_user}} then trunk {outbound_trunk} target=${{callture_out_target}}"/>
+                    <action application="log" data="NOTICE callture route step1 local: destination=${{destination_number}} user=${{callture_target_user}}"/>
                     <action application="set" data="continue_on_fail=true"/>
                     <action application="set" data="hangup_after_bridge=true"/>
-                    <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}|sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                    <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
+                    <action application="log" data="NOTICE callture route step2 trunk: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
+                    <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
                   </condition>
                   <condition field="destination_number" expression="^(?!1?[2-9]\\d{{9}}$).+">
                     <action application="hangup" data="CALL_REJECTED"/>
