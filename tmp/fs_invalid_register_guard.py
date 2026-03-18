@@ -174,16 +174,13 @@ def prune_hits(ip_hits: dict[str, list[float]], now: float, window: int) -> dict
 
 def is_nanp_identifier(identifier: str) -> bool:
     """
-    Accept North-American style destinations:
-      - 10 digits, NXXNXXXXXX (first digit 2-9)
-      - 11 digits with leading 1, 1NXXNXXXXXX
+    Accept strict North-American 10-digit NANP destinations only:
+      - NPA-NXX-XXXX where N in NPA and NXX is 2-9.
     """
     digits = re.sub(r"\D+", "", (identifier or "").strip())
-    if len(digits) == 10:
-        return digits[0] in "23456789"
-    if len(digits) == 11:
-        return digits[0] == "1" and digits[1] in "23456789"
-    return False
+    if len(digits) != 10:
+        return False
+    return bool(re.fullmatch(r"[2-9]\d{2}[2-9]\d{6}", digits))
 
 
 def main() -> int:
