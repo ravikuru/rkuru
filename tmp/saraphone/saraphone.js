@@ -885,6 +885,14 @@ function patchUaTransportSend(currentUa) {
     currentUa.transport.__calltureSendPatched = true;
 }
 
+function startSipRegistration() {
+    if (!ua || isRegistered || isRegistering) {
+        return;
+    }
+    isRegistering = true;
+    ua.register();
+}
+
 function init() {
 
     var nameDomain;
@@ -897,7 +905,7 @@ function init() {
 
     cur_call = null;
     isRegistered = false;
-    isRegistering = true;
+    isRegistering = false;
     resetOptionsTimer();
     yourname = $("#yourname").val();
     nameDomain = $("#domain").val();
@@ -968,10 +976,7 @@ function init() {
     ua.on('invite', handleInvite);
     ua.on('connected', function() {
         patchUaTransportSend(ua);
-        if (!isRegistered && !isRegistering) {
-            isRegistering = true;
-            ua.register();
-        }
+        startSipRegistration();
     });
     ua.on('disconnected', function() {
         console.error('DISCONNECTED');
@@ -1045,10 +1050,7 @@ function init() {
     });
 
     // Kick off the first REGISTER after transport send patch is in place.
-    if (!isRegistered && !isRegistering) {
-        isRegistering = true;
-        ua.register();
-    }
+    startSipRegistration();
 }
 
 $("#calling_input").keyup(function(event) {
