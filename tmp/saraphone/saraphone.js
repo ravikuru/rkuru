@@ -864,11 +864,17 @@ function resetOptionsTimer() {
 }
 
 function normalizeSipOverWsTokens(message) {
-    if (typeof message !== 'string') {
-        return message;
+    var textMessage = message;
+
+    if (typeof textMessage !== 'string') {
+        if (textMessage && typeof textMessage.toString === 'function') {
+            textMessage = textMessage.toString();
+        } else {
+            return message;
+        }
     }
 
-    return message
+    return textMessage
         .replace(/SIP\/2\.0\/WSS/gi, 'SIP/2.0/WS')
         .replace(/transport=wss/gi, 'transport=ws');
 }
