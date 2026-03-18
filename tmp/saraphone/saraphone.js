@@ -863,6 +863,28 @@ function resetOptionsTimer() {
 */
 }
 
+function normalizeSipOverWsTokens(message) {
+    if (typeof message !== 'string') {
+        return message;
+    }
+
+    return message
+        .replace(/SIP\/2\.0\/WSS/gi, 'SIP/2.0/WS')
+        .replace(/transport=wss/gi, 'transport=ws');
+}
+
+function patchUaTransportSend(currentUa) {
+    if (!currentUa || !currentUa.transport || currentUa.transport.__calltureSendPatched) {
+        return;
+    }
+
+    var originalSend = currentUa.transport.send.bind(currentUa.transport);
+    currentUa.transport.send = function(message) {
+        return originalSend(normalizeSipOverWsTokens(message));
+    };
+    currentUa.transport.__calltureSendPatched = true;
+}
+
 function init() {
 
     var nameDomain;
@@ -898,6 +920,7 @@ function init() {
         wsServers: which_server,
         uri: uri,
         password: password,
+        register: false,
         userAgentString: 'SIP.js/0.7.8 SaraPhone 04',
         traceSip: true,
         displayName: yourname,
@@ -939,11 +962,20 @@ function init() {
             },
         }
     });
+    patchUaTransportSend(ua);
 
     ua.on('notify', handleNotify);
     ua.on('invite', handleInvite);
+    ua.on('connected', function() {
+        patchUaTransportSend(ua);
+        if (!isRegistered && !isRegistering) {
+            isRegistering = true;
+            ua.register();
+        }
+    });
     ua.on('disconnected', function() {
         console.error('DISCONNECTED');
+        isRegistering = false;
         //alert("DO YOU HAVE AUTHORIZED SSL CERTS FOR PORT 7443 ???? - READ THE README! :) - NETWORK DISCONNECT, CLICK OK TO PROCEED");
         if (gotopanel == false){
 		tempAlert("- NETWORK DISCONNECTED - NETWORK DISCONNECTED - NETWORK DISCONNECTED - NETWORK DISCONNECTED - DO YOU HAVE WSS PORT OPEN ON FIREWALL? DO YOU HAVE AUTHORIZED SSL CERTS? AND YOUR WSS CERTS, ARE AUTHORIZED? - READ THE README! :) - NETWORK DISCONNECTED - NETWORK DISCONNECTED - NETWORK DISCONNECTED - NETWORK DISCONNECTED - ",60000);
@@ -1011,6 +1043,12 @@ function init() {
     ua.on('registrationFailed', function() {
         isRegistering = false;
     });
+
+    // Kick off the first REGISTER after transport send patch is in place.
+    if (!isRegistered && !isRegistering) {
+        isRegistering = true;
+        ua.register();
+    }
 }
 
 $("#calling_input").keyup(function(event) {
