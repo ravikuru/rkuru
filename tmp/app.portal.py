@@ -2089,26 +2089,7 @@ def sync_inbound_routes_dialplan() -> None:
 
 
 def sync_outbound_routes_dialplan() -> None:
-    with closing(db_conn()) as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                r.id,
-                r.name,
-                r.dial_pattern,
-                r.match_mode,
-                r.trunk_name,
-                t.enabled AS trunk_enabled,
-                t.direction AS trunk_direction,
-                t.outbound_prefix,
-                t.e164_send_plus
-            FROM outbound_routes r
-            LEFT JOIN trunks t ON t.name = r.trunk_name
-            WHERE r.enabled = 1
-            ORDER BY r.id
-            """
-        ).fetchall()
-
+    # Hardcoded per request: 10-digit local, 11-digit external.
     blocks: list[str] = [
         textwrap.dedent(
             """\
@@ -2125,44 +2106,6 @@ def sync_outbound_routes_dialplan() -> None:
             """
         )
     ]
-    for row in rows:
-        route_id = int(row["id"])
-        route_name = (row["name"] or f"out_{route_id}").strip()
-        dial_pattern = (row["dial_pattern"] or "").strip()
-        trunk_name = (row["trunk_name"] or "").strip()
-        trunk_direction = normalize_trunk_direction(str(row["trunk_direction"] or "both"))
-        if not dial_pattern or not trunk_name or not bool(row["trunk_enabled"]) or trunk_direction not in {"outbound", "both"}:
-            continue
-        expression, out_target = outbound_match_expression_and_target(dial_pattern, row["match_mode"] or "prefix")
-        safe_name = re.sub(r"[^0-9A-Za-z_]+", "_", route_name).strip("_") or f"out_{route_id}"
-        outbound_prefix = sanitize_outbound_prefix_for_dialing(str(row["outbound_prefix"] or ""))
-        send_plus = bool(row["e164_send_plus"])
-        actions = [
-            '<action application="set" data="continue_on_fail=true"/>',
-            '<action application="set" data="hangup_after_bridge=true"/>',
-            f'<action application="set" data="callture_out_target={out_target}"/>',
-        ]
-        if outbound_prefix:
-            actions.append(f'<action application="set" data="callture_out_target={outbound_prefix}${{callture_out_target}}"/>')
-        if send_plus:
-            actions.append(
-                '<action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target} : +${callture_out_target})}"/>'
-            )
-        else:
-            actions.append(
-                '<action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target:1} : ${callture_out_target})}"/>'
-            )
-        actions.append(f'<action application="bridge" data="sofia/gateway/{trunk_name}/${{callture_out_target}}"/>')
-        block = textwrap.dedent(
-            f"""\
-              <extension name="callture_out_{route_id}_{safe_name}">
-                <condition field="destination_number" expression="{expression}">
-                  {' '.join(actions)}
-                </condition>
-              </extension>
-            """
-        )
-        blocks.append(block)
 
     xml = "<include>\n" + ("\n".join(blocks) if blocks else "  <!-- no outbound routes configured -->\n") + "</include>\n"
     write_freeswitch_conf_file("dialplan/default/97_callture_outbound_routes.xml", xml)
