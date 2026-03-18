@@ -1902,33 +1902,29 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
         f"""\
         <include>
           <extension name="callture_webrtc_remote_uri_bridge">
-            <condition field="${{sip_authorized}}" expression="^(?:true|)$">
-              <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?!{local_domain_expr}$)[0-9A-Za-z.-]+$">
-                <condition field="destination_number" expression="^([0-9]{{7,15}})$">
-                  <action application="bridge" data="[origination_caller_id_number={outbound_identity},effective_caller_id_number={outbound_identity},sip_from_user={outbound_identity},sip_contact_user={outbound_identity},sip_from_host={local_domain},sip_from_uri={outbound_from_uri},sip_invite_from_uri={outbound_from_uri}]sofia/external/$1@${{sip_h_X-Callture-Target-Host}}"/>
-                </condition>
+            <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?!{local_domain_expr}$)[0-9A-Za-z.-]+$">
+              <condition field="destination_number" expression="^([0-9]{{7,15}})$">
+                <action application="bridge" data="[origination_caller_id_number={outbound_identity},effective_caller_id_number={outbound_identity},sip_from_user={outbound_identity},sip_contact_user={outbound_identity},sip_from_host={local_domain},sip_from_uri={outbound_from_uri},sip_invite_from_uri={outbound_from_uri}]sofia/external/$1@${{sip_h_X-Callture-Target-Host}}"/>
               </condition>
             </condition>
           </extension>
           <extension name="callture_webrtc_internal_user_bridge">
-            <condition field="${{sip_authorized}}" expression="^(?:true|)$">
-              <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?:|{local_domain_expr})$">
-                <condition field="destination_number" expression="^([2-9]\\d{{9}})$">
-                  <action application="set" data="callture_target_user=$1"/>
-                  <action application="log" data="NOTICE callture route local-10digit: destination=${{destination_number}} user=${{callture_target_user}}"/>
-                  <action application="set" data="hangup_after_bridge=true"/>
-                  <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
-                </condition>
-                <condition field="destination_number" expression="^(1[2-9]\\d{{9}})$">
-                  <action application="set" data="callture_out_target={kamailio_prefix}$1@{kamailio_host}"/>
-                  <action application="log" data="NOTICE callture route trunk-11digit: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
-                  <action application="set" data="continue_on_fail=true"/>
-                  <action application="set" data="hangup_after_bridge=true"/>
-                  <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
-                </condition>
-                <condition field="destination_number" expression="^(?![2-9]\\d{{9}}$|1[2-9]\\d{{9}}$).+">
-                  <action application="hangup" data="CALL_REJECTED"/>
-                </condition>
+            <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?:|{local_domain_expr})$">
+              <condition field="destination_number" expression="^([2-9]\\d{{9}})$">
+                <action application="set" data="callture_target_user=$1"/>
+                <action application="log" data="NOTICE callture route local-10digit: destination=${{destination_number}} user=${{callture_target_user}}"/>
+                <action application="set" data="hangup_after_bridge=true"/>
+                <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
+              </condition>
+              <condition field="destination_number" expression="^(1[2-9]\\d{{9}})$">
+                <action application="set" data="callture_out_target={kamailio_prefix}$1@{kamailio_host}"/>
+                <action application="log" data="NOTICE callture route trunk-11digit: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
+                <action application="set" data="continue_on_fail=true"/>
+                <action application="set" data="hangup_after_bridge=true"/>
+                <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+              </condition>
+              <condition field="destination_number" expression="^(?![2-9]\\d{{9}}$|1[2-9]\\d{{9}}$).+">
+                <action application="hangup" data="CALL_REJECTED"/>
               </condition>
             </condition>
           </extension>
@@ -2131,23 +2127,21 @@ def sync_outbound_routes_dialplan() -> None:
         textwrap.dedent(
             f"""\
               <extension name="callture_registered_internal_or_kamailio_trunk">
-                <condition field="${{sip_authorized}}" expression="^(?:true|)$">
-                  <condition field="destination_number" expression="^([2-9]\\d{{9}})$">
-                    <action application="set" data="callture_target_user=$1"/>
-                    <action application="log" data="NOTICE callture route local-10digit: destination=${{destination_number}} user=${{callture_target_user}}"/>
-                    <action application="set" data="hangup_after_bridge=true"/>
-                    <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
-                  </condition>
-                  <condition field="destination_number" expression="^(1[2-9]\\d{{9}})$">
-                    <action application="set" data="callture_out_target={kamailio_prefix}$1@{kamailio_host}"/>
-                    <action application="log" data="NOTICE callture route trunk-11digit: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
-                    <action application="set" data="continue_on_fail=true"/>
-                    <action application="set" data="hangup_after_bridge=true"/>
-                    <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
-                  </condition>
-                  <condition field="destination_number" expression="^(?![2-9]\\d{{9}}$|1[2-9]\\d{{9}}$).+">
-                    <action application="hangup" data="CALL_REJECTED"/>
-                  </condition>
+                <condition field="destination_number" expression="^([2-9]\\d{{9}})$">
+                  <action application="set" data="callture_target_user=$1"/>
+                  <action application="log" data="NOTICE callture route local-10digit: destination=${{destination_number}} user=${{callture_target_user}}"/>
+                  <action application="set" data="hangup_after_bridge=true"/>
+                  <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
+                </condition>
+                <condition field="destination_number" expression="^(1[2-9]\\d{{9}})$">
+                  <action application="set" data="callture_out_target={kamailio_prefix}$1@{kamailio_host}"/>
+                  <action application="log" data="NOTICE callture route trunk-11digit: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
+                  <action application="set" data="continue_on_fail=true"/>
+                  <action application="set" data="hangup_after_bridge=true"/>
+                  <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                </condition>
+                <condition field="destination_number" expression="^(?![2-9]\\d{{9}}$|1[2-9]\\d{{9}}$).+">
+                  <action application="hangup" data="CALL_REJECTED"/>
                 </condition>
               </extension>
             """
