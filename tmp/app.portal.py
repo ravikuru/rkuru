@@ -1919,7 +1919,7 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
                 <action application="set" data="effective_caller_id_name=International Routing"/>
                 <action application="set" data="callture_out_target={kamailio_prefix}$1@{kamailio_host}"/>
                 <action application="log" data="NOTICE callture route trunk-11digit: destination=${{destination_number}} target=${{callture_out_target}}"/>
-                <action application="set" data="continue_on_fail=true"/>
+                <action application="set" data="continue_on_fail=false"/>
                 <action application="set" data="hangup_after_bridge=true"/>
                 <action application="bridge" data="sofia/external/{kamailio_prefix}$1@{kamailio_host}"/>
               </condition>
@@ -2136,7 +2136,7 @@ def sync_outbound_routes_dialplan() -> None:
                   <action application="set" data="effective_caller_id_name=International Routing"/>
                   <action application="set" data="callture_out_target={kamailio_prefix}$1@{kamailio_host}"/>
                   <action application="log" data="NOTICE callture route trunk-11digit: destination=${{destination_number}} target=${{callture_out_target}}"/>
-                  <action application="set" data="continue_on_fail=true"/>
+                  <action application="set" data="continue_on_fail=false"/>
                   <action application="set" data="hangup_after_bridge=true"/>
                   <action application="bridge" data="sofia/external/{kamailio_prefix}$1@{kamailio_host}"/>
                 </condition>
