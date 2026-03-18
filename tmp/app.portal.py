@@ -1890,11 +1890,12 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
                   <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
                   {fallback_prefix_action}
                   {fallback_plus_action}
-                  <condition field="${{user_registered(${{callture_target_user}}@$${{domain}})}}" expression="^true$">
-                    <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
-                    <anti-action application="set" data="continue_on_fail=true"/>
-                    <anti-action application="set" data="hangup_after_bridge=true"/>
-                    <anti-action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                  <action application="set" data="callture_registered_contact=${{sofia_contact(${{callture_target_user}}@$${{domain}})}}"/>
+                  <condition field="${{callture_registered_contact}}" expression="^(?:|error/.*)$">
+                    <action application="set" data="continue_on_fail=true"/>
+                    <action application="set" data="hangup_after_bridge=true"/>
+                    <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                    <anti-action application="bridge" data="${{callture_registered_contact}}"/>
                   </condition>
                 </condition>
                 <condition field="destination_number" expression="^(?!1?[2-9]\\d{{9}}$).+">
@@ -2117,11 +2118,12 @@ def sync_outbound_routes_dialplan() -> None:
                     <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
                     {fallback_prefix_action}
                     {fallback_plus_action}
-                    <condition field="${{user_registered(${{callture_target_user}}@$${{domain}})}}" expression="^true$">
-                      <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
-                      <anti-action application="set" data="continue_on_fail=true"/>
-                      <anti-action application="set" data="hangup_after_bridge=true"/>
-                      <anti-action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                    <action application="set" data="callture_registered_contact=${{sofia_contact(${{callture_target_user}}@$${{domain}})}}"/>
+                    <condition field="${{callture_registered_contact}}" expression="^(?:|error/.*)$">
+                      <action application="set" data="continue_on_fail=true"/>
+                      <action application="set" data="hangup_after_bridge=true"/>
+                      <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                      <anti-action application="bridge" data="${{callture_registered_contact}}"/>
                     </condition>
                   </condition>
                   <condition field="destination_number" expression="^(?!1?[2-9]\\d{{9}}$).+">
