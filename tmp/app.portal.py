@@ -1846,6 +1846,17 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
     outbound_from_uri = f"sip:{outbound_identity}@{local_domain}"
     outbound_trunk = re.sub(r"[^0-9A-Za-z_.-]", "", REGISTERED_FIRST_OUTBOUND_TRUNK) or "kamailio6932"
     nanp_expr = NANP_10_OR_11_DIGIT_EXPR
+    fallback_prefix, fallback_send_plus = outbound_trunk_dialing_profile(outbound_trunk)
+    fallback_prefix_action = (
+        f'<action application="set" data="callture_out_target={fallback_prefix}${{callture_out_target}}"/>'
+        if fallback_prefix
+        else ""
+    )
+    fallback_plus_action = (
+        '<action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target} : +${callture_out_target})}"/>'
+        if fallback_send_plus
+        else '<action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target:1} : ${callture_out_target})}"/>'
+    )
     xml = textwrap.dedent(
         f"""\
         <include>
@@ -1864,6 +1875,8 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
                 <condition field="destination_number" expression="{nanp_expr}">
                   <action application="set" data="callture_target_user=${{regex(${{destination_number}}|^1?([2-9]\\d{{9}})$|$1)}}"/>
                   <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
+                  {fallback_prefix_action}
+                  {fallback_plus_action}
                   <condition field="${{user_registered(${{callture_target_user}}@$${{domain}})}}" expression="^true$">
                     <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
                     <anti-action application="set" data="continue_on_fail=true"/>
@@ -1934,6 +1947,32 @@ def sync_trunks_to_freeswitch() -> None:
     write_root_file("/usr/local/freeswitch/conf/sip_profiles/external/99_callture_trunks.xml", xml)
     fs_cli("reloadxml")
     fs_cli("sofia profile external rescan")
+
+
+def outbound_trunk_dialing_profile(trunk_name: str) -> tuple[str, bool]:
+    name = (trunk_name or "").strip()
+    if not name:
+        return "", False
+    with closing(db_conn()) as conn:
+        row = conn.execute(
+            """
+            SELECT outbound_prefix, e164_send_plus, enabled, direction
+            FROM trunks
+            WHERE name = ?
+            LIMIT 1
+            """,
+            (name,),
+        ).fetchone()
+    if row is None:
+        return "", False
+    if not bool(row["enabled"]):
+        return "", False
+    direction = normalize_trunk_direction(str(row["direction"] or "both"))
+    if direction not in {"outbound", "both"}:
+        return "", False
+    outbound_prefix = sanitize_outbound_prefix_for_dialing(str(row["outbound_prefix"] or ""))
+    send_plus = bool(row["e164_send_plus"])
+    return outbound_prefix, send_plus
 
 
 def sync_inbound_routes_dialplan() -> None:
@@ -2044,6 +2083,17 @@ def sync_outbound_routes_dialplan() -> None:
         ).fetchall()
 
     outbound_trunk = re.sub(r"[^0-9A-Za-z_.-]", "", REGISTERED_FIRST_OUTBOUND_TRUNK) or "kamailio6932"
+    fallback_prefix, fallback_send_plus = outbound_trunk_dialing_profile(outbound_trunk)
+    fallback_prefix_action = (
+        f'<action application="set" data="callture_out_target={fallback_prefix}${{callture_out_target}}"/>'
+        if fallback_prefix
+        else ""
+    )
+    fallback_plus_action = (
+        '<action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target} : +${callture_out_target})}"/>'
+        if fallback_send_plus
+        else '<action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target:1} : ${callture_out_target})}"/>'
+    )
     blocks: list[str] = [
         textwrap.dedent(
             f"""\
@@ -2052,6 +2102,8 @@ def sync_outbound_routes_dialplan() -> None:
                   <condition field="destination_number" expression="{NANP_10_OR_11_DIGIT_EXPR}">
                     <action application="set" data="callture_target_user=${{regex(${{destination_number}}|^1?([2-9]\\d{{9}})$|$1)}}"/>
                     <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
+                    {fallback_prefix_action}
+                    {fallback_plus_action}
                     <condition field="${{user_registered(${{callture_target_user}}@$${{domain}})}}" expression="^true$">
                       <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
                       <anti-action application="set" data="continue_on_fail=true"/>
