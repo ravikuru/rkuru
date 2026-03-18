@@ -44,6 +44,7 @@ DB_KEY_TO_DATABASE = {
     "TelcanRecovery_DBS4": os.getenv("VPBX_DATABASE_TelcanRecovery_DBS4", "TelcanRecovery_DBS4"),
     "TelcanVoIP": os.getenv("VPBX_DATABASE_TelcanVoIP", "TelcanVoIP"),
 }
+AVAILABLE_ONLY_MODE = os.getenv("VPBX_AVAILABLE_ONLY_MODE", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 MIGRATED_ENDPOINTS = {
     "test.asp",
@@ -152,6 +153,29 @@ _CDR_VALID_FIELDS = {
         "[RateCategoryID] [RRateCategoryID] [Leg1RateCode] [Leg2RateCode] [ProductId] [VoiceMailId] [ExtNo] "
         "[MemoId] [RecordId]"
     ).split()
+}
+
+_ENDPOINT_DB_HINTS: dict[str, str] = {
+    "servicetypeget.asp": "TelcanSwitch",
+    "servicetypegetv2.asp": "TelcanSwitch",
+    "inbounddidserveripget.asp": "TelcanSwitch",
+    "switchconfiggetold.asp": "TelcanSwitch",
+    "voipcallmonitor.asp": "TelcanSwitch/TelcanMonitor",
+    "synchtelcanvoip.asp": "TelcanSwitch",
+    "synchtelcanvoipasync.asp": "TelcanSwitch",
+    "smsnotificationqueue.asp": "TelcanSwitch",
+    "vmindicatorget.asp": "TelcanSwitch",
+    "loglcrattempt.asp": "TelcanCalls_NYDB6",
+    "savecdrv5.asp": "TelcanCalls_NYDB6/TelcanCalls/TelcanMonitor",
+    "savecdrv5-dev.asp": "TelcanCalls_NYDB6/TelcanCalls/TelcanMonitor",
+    "voipextinfoget.asp": "TelcanSwitch/TelcanInternet/TelcanMonitor",
+    "voipcalleridgetbyuserid.asp": "TelcanInternet",
+    "getinboundlineinfov403.asp": "TelcanSwitch/TelcanMonitor/TelcanInternet",
+    "getinboundlineinfov405.asp": "TelcanSwitch/TelcanMonitor/TelcanInternet",
+    "providerlookupv3.asp": "TelcanSwitch",
+    "getratesv301.asp": "TelcanSwitch/TelcanCalls",
+    "getratesv305.asp": "TelcanSwitch/TelcanCalls",
+    "getratesv306.asp": "TelcanSwitch/TelcanCalls",
 }
 
 app = FastAPI(title=APP_NAME)
@@ -311,14 +335,62 @@ def _execute(sql: str, db_key: str) -> int:
         return int(cur.rowcount or 0)
 
 
+def _looks_like_db_unavailable(exc_text: str) -> bool:
+    text = (exc_text or "").lower()
+    markers = [
+        "database '",
+        "login failed for user",
+        "adaptive server connection failed",
+        "unable to connect: adaptive server is unavailable",
+        "in the middle of a restore",
+        "has been marked suspect",
+        "currently not accessible for queries",
+        "not enabled for read access",
+        "connection refused",
+        "db-lib error message 20002",
+        "db-lib error message 20009",
+    ]
+    return any(m in text for m in markers)
+
+
+def _extract_db_name_from_error(exc_text: str) -> str:
+    text = str(exc_text or "")
+    m = re.search(r"Database '([^']+)'", text, flags=re.IGNORECASE)
+    return m.group(1) if m else ""
+
+
 def _db_error(endpoint: str, exc: Exception) -> JSONResponse:
+    exc_text = str(exc)
+    endpoint_l = str(endpoint or "").casefold()
+    if AVAILABLE_ONLY_MODE and _looks_like_db_unavailable(exc_text):
+        db_name = _extract_db_name_from_error(exc_text)
+        payload: dict[str, Any] = {
+            "ResultID": -9,
+            "Status": "degraded",
+            "Error": "Endpoint temporarily unavailable in available-only mode",
+            "Endpoint": endpoint,
+            "Mode": "available-only",
+            "Message": "This endpoint depends on a database that is currently unavailable.",
+        }
+        if db_name:
+            payload["Database"] = db_name
+        db_hint = _ENDPOINT_DB_HINTS.get(endpoint_l, "")
+        if db_hint and db_hint != db_name:
+            payload["DatabaseHint"] = db_hint
+        logger.warning(
+            "Endpoint %s unavailable in available-only mode: %s",
+            endpoint,
+            exc_text[:300],
+        )
+        return _json_response(payload, status_code=200)
+
     logger.exception("Endpoint %s failed", endpoint)
     return _json_response(
         {
             "ResultID": -2,
             "Error": "DB connection/query failed",
             "Endpoint": endpoint,
-            "Details": str(exc),
+            "Details": exc_text,
         },
         status_code=500,
     )
