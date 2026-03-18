@@ -1920,7 +1920,7 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
         f"""\
         <include>
           <extension name="callture_webrtc_remote_uri_bridge">
-            <condition field="${{sip_authorized}}" expression="^true$">
+            <condition field="${{sip_authorized}}" expression="^(?:true|)$">
               <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?!{local_domain_expr}$)[0-9A-Za-z.-]+$">
                 <condition field="destination_number" expression="^([0-9]{{7,15}})$">
                   <action application="bridge" data="[origination_caller_id_number={outbound_identity},effective_caller_id_number={outbound_identity},sip_from_user={outbound_identity},sip_contact_user={outbound_identity},sip_from_host={local_domain},sip_from_uri={outbound_from_uri},sip_invite_from_uri={outbound_from_uri}]sofia/external/$1@${{sip_h_X-Callture-Target-Host}}"/>
@@ -1929,7 +1929,7 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
             </condition>
           </extension>
           <extension name="callture_webrtc_internal_user_bridge">
-            <condition field="${{sip_authorized}}" expression="^true$">
+            <condition field="${{sip_authorized}}" expression="^(?:true|)$">
               <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?:|{local_domain_expr})$">
                 <condition field="destination_number" expression="{nanp_expr}">
                   <action application="set" data="callture_target_user=${{regex(${{destination_number}}|^1?([2-9]\\d{{9}})$|$1)}}"/>
@@ -2171,7 +2171,7 @@ def sync_outbound_routes_dialplan() -> None:
         textwrap.dedent(
             f"""\
               <extension name="callture_registered_internal_or_kamailio_trunk">
-                <condition field="${{sip_authorized}}" expression="^true$">
+                <condition field="${{sip_authorized}}" expression="^(?:true|)$">
                   <condition field="destination_number" expression="{NANP_10_OR_11_DIGIT_EXPR}">
                     <action application="set" data="callture_target_user=${{regex(${{destination_number}}|^1?([2-9]\\d{{9}})$|$1)}}"/>
                     <action application="set" data="callture_registered_contact=${{sofia_contact(${{callture_target_user}}@$${{domain}})}}"/>
