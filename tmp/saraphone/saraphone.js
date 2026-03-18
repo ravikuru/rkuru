@@ -42,6 +42,7 @@ var isDnd = false;
 var isNoRing = false;
 var isAutoAnswer = false;
 var isRegistered = false;
+var isRegistering = false;
 var vmail_subscription = false;
 var presence_array = new Array();
 var incomingsession = null;
@@ -223,6 +224,12 @@ function notifyMe(msg) {
 
 
 function onRegistered() {
+    if (isRegistered) {
+        return;
+    }
+
+    isRegistering = false;
+
     if (isIOS) {
         //do nothing
     } else {
@@ -867,6 +874,8 @@ function init() {
     var wssport;
 
     cur_call = null;
+    isRegistered = false;
+    isRegistering = true;
     resetOptionsTimer();
     yourname = $("#yourname").val();
     nameDomain = $("#domain").val();
@@ -906,6 +915,7 @@ function init() {
                 var str = content;
                 var patt2 = new RegExp("WebSocket abrupt disconnection");
                 var res2 = patt2.exec(str);
+                var register200 = /SIP\/2\.0 200 OK/i.test(str) && /CSeq:\s*\d+\s+REGISTER/i.test(str);
 /*
                 var patt = new RegExp("OPTIONS sip");
                 var res = patt.exec(str);
@@ -919,6 +929,12 @@ function init() {
                         console.error('WebSocket ABRUPT DISCONNECTION');
 			tempAlert("- WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - WebSocket ABRUPT DISCONNECTION - ",10000);
                     }
+                }
+
+                // Some deployments occasionally miss SIP.js "registered" callback;
+                // if REGISTER got 200 OK, force UI into the registered state.
+                if (register200 && !isRegistered) {
+                    onRegistered();
                 }
             },
         }
@@ -976,12 +992,24 @@ function init() {
         }
     });
 
-    ua.once('registered', onRegistered.bind(cur_call));
+    ua.on('registered', onRegistered.bind(cur_call));
     ua.on('unregistered', function() {
         console.error('UNREGISTERED');
+        var wasRegistered = isRegistered;
+        isRegistered = false;
+
+        // Ignore transient unregistered events during auth challenge/registration.
+        if (isRegistering || !wasRegistered) {
+            return;
+        }
+
         if (gotopanel == false){
 		tempAlert("- UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - UNREGISTERED - ",3000);
         }
+    });
+
+    ua.on('registrationFailed', function() {
+        isRegistering = false;
     });
 }
 
