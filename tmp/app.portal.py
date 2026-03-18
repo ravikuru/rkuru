@@ -45,6 +45,8 @@ WEBRTC_DEFAULT_PASSWORD = "telcan2008!"
 # Default user-part for outbound WebRTC->external SIP From/Contact headers.
 # Override with env var WEBRTC_OUTBOUND_IDENTITY_DEFAULT if needed.
 WEBRTC_OUTBOUND_IDENTITY_DEFAULT = os.getenv("WEBRTC_OUTBOUND_IDENTITY_DEFAULT", "6472585272").strip()
+REGISTERED_FIRST_OUTBOUND_TRUNK = os.getenv("CC_REGISTERED_FIRST_OUTBOUND_TRUNK", "kamailio6932").strip() or "kamailio6932"
+NANP_10_OR_11_DIGIT_EXPR = r"^(1?[2-9]\d{9})$"
 
 APP_SECRET = os.getenv("CC_PORTAL_SECRET", "change-me-now-secret")
 DEFAULT_ADMIN_USER = os.getenv("CC_ADMIN_USER", "rkuru")
@@ -1842,6 +1844,8 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
     local_domain_expr = re.escape(local_domain)
     outbound_identity = re.sub(r"\D+", "", WEBRTC_OUTBOUND_IDENTITY_DEFAULT) or WEBRTC_DEFAULT_EXTENSION
     outbound_from_uri = f"sip:{outbound_identity}@{local_domain}"
+    outbound_trunk = re.sub(r"[^0-9A-Za-z_.-]", "", REGISTERED_FIRST_OUTBOUND_TRUNK) or "kamailio6932"
+    nanp_expr = NANP_10_OR_11_DIGIT_EXPR
     xml = textwrap.dedent(
         f"""\
         <include>
@@ -1856,10 +1860,19 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
           </extension>
           <extension name="callture_webrtc_internal_user_bridge">
             <condition field="${{sip_authorized}}" expression="^true$">
-              <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^{local_domain_expr}$">
-                <condition field="destination_number" expression="^([2-9]\\d{{9}})$">
-                  <action application="set" data="callture_target_user=$1"/>
-                  <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
+              <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?:|{local_domain_expr})$">
+                <condition field="destination_number" expression="{nanp_expr}">
+                  <action application="set" data="callture_target_user=${{regex(${{destination_number}}|^1?([2-9]\\d{{9}})$|$1)}}"/>
+                  <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
+                  <condition field="${{user_registered(${{callture_target_user}}@$${{domain}})}}" expression="^true$">
+                    <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
+                    <anti-action application="set" data="continue_on_fail=true"/>
+                    <anti-action application="set" data="hangup_after_bridge=true"/>
+                    <anti-action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                  </condition>
+                </condition>
+                <condition field="destination_number" expression="^(?!1?[2-9]\\d{{9}}$).+">
+                  <action application="hangup" data="CALL_REJECTED"/>
                 </condition>
               </condition>
             </condition>
@@ -2030,7 +2043,30 @@ def sync_outbound_routes_dialplan() -> None:
             """
         ).fetchall()
 
-    blocks: list[str] = []
+    outbound_trunk = re.sub(r"[^0-9A-Za-z_.-]", "", REGISTERED_FIRST_OUTBOUND_TRUNK) or "kamailio6932"
+    blocks: list[str] = [
+        textwrap.dedent(
+            f"""\
+              <extension name="callture_registered_internal_or_kamailio_trunk">
+                <condition field="${{sip_authorized}}" expression="^true$">
+                  <condition field="destination_number" expression="{NANP_10_OR_11_DIGIT_EXPR}">
+                    <action application="set" data="callture_target_user=${{regex(${{destination_number}}|^1?([2-9]\\d{{9}})$|$1)}}"/>
+                    <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
+                    <condition field="${{user_registered(${{callture_target_user}}@$${{domain}})}}" expression="^true$">
+                      <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
+                      <anti-action application="set" data="continue_on_fail=true"/>
+                      <anti-action application="set" data="hangup_after_bridge=true"/>
+                      <anti-action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                    </condition>
+                  </condition>
+                  <condition field="destination_number" expression="^(?!1?[2-9]\\d{{9}}$).+">
+                    <action application="hangup" data="CALL_REJECTED"/>
+                  </condition>
+                </condition>
+              </extension>
+            """
+        )
+    ]
     for row in rows:
         route_id = int(row["id"])
         route_name = (row["name"] or f"out_{route_id}").strip()
