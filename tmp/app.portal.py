@@ -2263,12 +2263,18 @@ def webrtc_phone_page(request: Request):
     return response
 
 
-@app.get("/saraphone")
-def saraphone_page(request: Request):
+@app.get("/callture")
+def callture_page(request: Request):
     user, denied = require_admin_or_redirect(request)
     if denied:
         return denied
-    return RedirectResponse(url="/static/saraphone/saraphone.html", status_code=302)
+    return RedirectResponse(url="/static/callture/callture.html", status_code=302)
+
+
+@app.get("/saraphone")
+def saraphone_page(request: Request):
+    # Backward-compatible alias for the old SaraPhone URL.
+    return callture_page(request)
 
 
 @app.websocket("/webrtc/ws")
