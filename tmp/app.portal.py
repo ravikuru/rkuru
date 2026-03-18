@@ -1906,6 +1906,16 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
         if fallback_send_plus
         else '<action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target:1} : ${callture_out_target})}"/>'
     )
+    fallback_prefix_anti_action = (
+        f'<anti-action application="set" data="callture_out_target={fallback_prefix}${{callture_out_target}}"/>'
+        if fallback_prefix
+        else ""
+    )
+    fallback_plus_anti_action = (
+        '<anti-action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target} : +${callture_out_target})}"/>'
+        if fallback_send_plus
+        else '<anti-action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target:1} : ${callture_out_target})}"/>'
+    )
     xml = textwrap.dedent(
         f"""\
         <include>
@@ -1923,18 +1933,19 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
               <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?:|{local_domain_expr})$">
                 <condition field="destination_number" expression="{nanp_expr}">
                   <action application="set" data="callture_target_user=${{regex(${{destination_number}}|^1?([2-9]\\d{{9}})$|$1)}}"/>
-                  <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
-                  {fallback_prefix_action}
-                  {fallback_plus_action}
-                  <action application="log" data="NOTICE callture route step1 local: destination=${{destination_number}} user=${{callture_target_user}}"/>
-                  <action application="set" data="callture_failover_causes=NO_ROUTE_DESTINATION,UNALLOCATED_NUMBER,USER_BUSY,NO_ANSWER,NO_USER_RESPONSE,SUBSCRIBER_ABSENT,CALL_REJECTED,NORMAL_TEMPORARY_FAILURE,RECOVERY_ON_TIMER_EXPIRE,ORIGINATOR_CANCEL"/>
-                  <action application="set" data="continue_on_fail=${callture_failover_causes}"/>
-                  <action application="set" data="hangup_after_bridge=false"/>
-                  <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
-                  <action application="log" data="NOTICE callture route step2 trunk: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
-                  <action application="set" data="continue_on_fail=true"/>
-                  <action application="set" data="hangup_after_bridge=true"/>
-                  <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                  <action application="set" data="callture_registered_contact=${{sofia_contact(${{callture_target_user}}@$${{domain}})}}"/>
+                  <condition field="${{callture_registered_contact}}" expression="^(?!$)(?!error/).+">
+                    <action application="log" data="NOTICE callture route step1 local: destination=${{destination_number}} contact=${{callture_registered_contact}}"/>
+                    <action application="set" data="hangup_after_bridge=true"/>
+                    <action application="bridge" data="${{callture_registered_contact}}"/>
+                    <anti-action application="set" data="callture_out_target=1${{callture_target_user}}"/>
+                    {fallback_prefix_anti_action}
+                    {fallback_plus_anti_action}
+                    <anti-action application="log" data="NOTICE callture route step2 trunk: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
+                    <anti-action application="set" data="continue_on_fail=true"/>
+                    <anti-action application="set" data="hangup_after_bridge=true"/>
+                    <anti-action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                  </condition>
                 </condition>
                 <condition field="destination_number" expression="^(?!1?[2-9]\\d{{9}}$).+">
                   <action application="hangup" data="CALL_REJECTED"/>
@@ -2146,6 +2157,16 @@ def sync_outbound_routes_dialplan() -> None:
         if fallback_send_plus
         else '<action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target:1} : ${callture_out_target})}"/>'
     )
+    fallback_prefix_anti_action = (
+        f'<anti-action application="set" data="callture_out_target={fallback_prefix}${{callture_out_target}}"/>'
+        if fallback_prefix
+        else ""
+    )
+    fallback_plus_anti_action = (
+        '<anti-action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target} : +${callture_out_target})}"/>'
+        if fallback_send_plus
+        else '<anti-action application="set" data="callture_out_target=${if(${callture_out_target:0:1} == + ? ${callture_out_target:1} : ${callture_out_target})}"/>'
+    )
     blocks: list[str] = [
         textwrap.dedent(
             f"""\
@@ -2153,18 +2174,19 @@ def sync_outbound_routes_dialplan() -> None:
                 <condition field="${{sip_authorized}}" expression="^true$">
                   <condition field="destination_number" expression="{NANP_10_OR_11_DIGIT_EXPR}">
                     <action application="set" data="callture_target_user=${{regex(${{destination_number}}|^1?([2-9]\\d{{9}})$|$1)}}"/>
-                    <action application="set" data="callture_out_target=1${{callture_target_user}}"/>
-                    {fallback_prefix_action}
-                    {fallback_plus_action}
-                    <action application="log" data="NOTICE callture route step1 local: destination=${{destination_number}} user=${{callture_target_user}}"/>
-                    <action application="set" data="callture_failover_causes=NO_ROUTE_DESTINATION,UNALLOCATED_NUMBER,USER_BUSY,NO_ANSWER,NO_USER_RESPONSE,SUBSCRIBER_ABSENT,CALL_REJECTED,NORMAL_TEMPORARY_FAILURE,RECOVERY_ON_TIMER_EXPIRE,ORIGINATOR_CANCEL"/>
-                    <action application="set" data="continue_on_fail=${callture_failover_causes}"/>
-                    <action application="set" data="hangup_after_bridge=false"/>
-                    <action application="bridge" data="user/${{callture_target_user}}@$${{domain}}"/>
-                    <action application="log" data="NOTICE callture route step2 trunk: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
-                    <action application="set" data="continue_on_fail=true"/>
-                    <action application="set" data="hangup_after_bridge=true"/>
-                    <action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                    <action application="set" data="callture_registered_contact=${{sofia_contact(${{callture_target_user}}@$${{domain}})}}"/>
+                    <condition field="${{callture_registered_contact}}" expression="^(?!$)(?!error/).+">
+                      <action application="log" data="NOTICE callture route step1 local: destination=${{destination_number}} contact=${{callture_registered_contact}}"/>
+                      <action application="set" data="hangup_after_bridge=true"/>
+                      <action application="bridge" data="${{callture_registered_contact}}"/>
+                      <anti-action application="set" data="callture_out_target=1${{callture_target_user}}"/>
+                      {fallback_prefix_anti_action}
+                      {fallback_plus_anti_action}
+                      <anti-action application="log" data="NOTICE callture route step2 trunk: destination=${{destination_number}} trunk={outbound_trunk} target=${{callture_out_target}}"/>
+                      <anti-action application="set" data="continue_on_fail=true"/>
+                      <anti-action application="set" data="hangup_after_bridge=true"/>
+                      <anti-action application="bridge" data="sofia/gateway/{outbound_trunk}/${{callture_out_target}}"/>
+                    </condition>
                   </condition>
                   <condition field="destination_number" expression="^(?!1?[2-9]\\d{{9}}$).+">
                     <action application="hangup" data="CALL_REJECTED"/>
