@@ -1,0 +1,10 @@
+[Unit]
+Description=Block invalid SIP REGISTER scanners (non-10-digit usernames)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fs_invalid_register_guard.py
+User=root
+Group=root
+
