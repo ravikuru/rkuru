@@ -1909,7 +1909,7 @@ def sync_webrtc_internal_user_bridge_dialplan() -> None:
             <condition field="${{sip_h_X-Callture-Target-Host}}" expression="^(?:|{local_domain_expr})$">
               <condition field="destination_number" expression="^(\\d{{10}})$">
                 <action application="set" data="effective_caller_id_name=Local Call"/>
-                <action application="bridge" data="sofia/internal/${{destination_number}}@$${{domain_name}}"/>
+                <action application="bridge" data="user/${{destination_number}}@$${{domain}}"/>
               </condition>
               <condition field="destination_number" expression="^(\\d{{11}})$">
                 <action application="set" data="effective_caller_id_name=International Routing"/>
@@ -2096,7 +2096,7 @@ def sync_outbound_routes_dialplan() -> None:
               <extension name="north_american_routing">
                 <condition field="destination_number" expression="^(\\d{{10}})$">
                   <action application="set" data="effective_caller_id_name=Local Call"/>
-                  <action application="bridge" data="sofia/internal/${{destination_number}}@$${{domain_name}}"/>
+                  <action application="bridge" data="user/${{destination_number}}@$${{domain}}"/>
                 </condition>
                 <condition field="destination_number" expression="^(\\d{{11}})$">
                   <action application="set" data="effective_caller_id_name=International Routing"/>
