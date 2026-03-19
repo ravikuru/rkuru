@@ -2108,7 +2108,13 @@ def sync_outbound_routes_dialplan() -> None:
     ]
 
     xml = "<include>\n" + ("\n".join(blocks) if blocks else "  <!-- no outbound routes configured -->\n") + "</include>\n"
-    write_freeswitch_conf_file("dialplan/default/97_callture_outbound_routes.xml", xml)
+    # Load before stock enum/default routes so calls do not fall through to example.com.
+    write_freeswitch_conf_file("dialplan/default/00_callture_outbound_routes.xml", xml)
+    # Keep legacy file present but inert to avoid stale late-order routing.
+    write_freeswitch_conf_file(
+        "dialplan/default/97_callture_outbound_routes.xml",
+        "<include>\n  <!-- deprecated: moved to 00_callture_outbound_routes.xml -->\n</include>\n",
+    )
     fs_cli("reloadxml")
 
 
