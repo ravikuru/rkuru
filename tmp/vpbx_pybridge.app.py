@@ -433,6 +433,89 @@ def _db_error(endpoint: str, exc: Exception) -> JSONResponse:
     )
 
 
+GENERIC_PROC_DB_CANDIDATES: tuple[str, ...] = (
+    "TelcanAccounts",
+    "TelcanSwitch",
+    "TelcanLCR",
+    "TelcanCalls",
+    "TelcanMonitor",
+    "TelcanInternet",
+    "TelcanQueue",
+)
+
+
+def _normalized_proc_params(request: Request) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for key, value in request.query_params.items():
+        clean_key = re.sub(r"[^0-9A-Za-z_]", "", str(key or ""))
+        if not clean_key:
+            continue
+        params[clean_key] = str(value or "")
+    return params
+
+
+def _build_exec_proc_sql(proc_name: str, params: dict[str, str]) -> str:
+    if not params:
+        return f"EXEC [dbo].[{proc_name}]"
+    pieces = [f"@{k}=N'{_safe_sql_text(v)}'" for k, v in params.items()]
+    return f"EXEC [dbo].[{proc_name}] " + ", ".join(pieces)
+
+
+def _try_generic_proc_endpoint(endpoint: str, request: Request) -> dict[str, Any]:
+    base = re.sub(r"[^0-9A-Za-z_]", "", (endpoint or "").rsplit(".", 1)[0].strip())
+    if not base:
+        return {
+            "ResultID": -1,
+            "Endpoint": endpoint,
+            "Error": "Invalid endpoint name",
+            "Mode": "generic-proc",
+        }
+
+    params = _normalized_proc_params(request)
+    proc_candidates = [f"usp_{base}", f"sp{base}", base]
+    attempts: list[str] = []
+    errors: list[str] = []
+
+    for db_key in GENERIC_PROC_DB_CANDIDATES:
+        for proc_name in proc_candidates:
+            sql = _build_exec_proc_sql(proc_name, params)
+            attempts.append(f"{db_key}:{proc_name}")
+            try:
+                row = _fetch_one(sql, db_key)
+                if row:
+                    payload: dict[str, Any] = {
+                        "ResultID": 1,
+                        "Endpoint": endpoint,
+                        "Mode": "generic-proc",
+                        "DBKey": db_key,
+                        "Procedure": proc_name,
+                    }
+                    payload.update(row)
+                    return payload
+                # Some procedures return no row but still complete successfully.
+                _execute(sql, db_key)
+                return {
+                    "ResultID": 1,
+                    "Endpoint": endpoint,
+                    "Mode": "generic-proc",
+                    "DBKey": db_key,
+                    "Procedure": proc_name,
+                    "Message": "Executed successfully with no row payload",
+                }
+            except Exception as exc:
+                errors.append(f"{db_key}:{proc_name}: {str(exc)[:200]}")
+                continue
+
+    return {
+        "ResultID": -1,
+        "Endpoint": endpoint,
+        "Mode": "generic-proc",
+        "Error": "Endpoint not migrated yet and generic proc lookup failed",
+        "Tried": attempts[:30],
+        "Details": errors[:10],
+    }
+
+
 def _param(request: Request, key: str, default: str = "") -> str:
     value = request.query_params.get(key)
     if value is not None:
@@ -880,7 +963,7 @@ async def _handle_voip_db_test(request: Request, endpoint: str, _: BackgroundTas
                 "Error": "MySQL mode for this endpoint is not configured yet",
                 "DBName": db_name,
             },
-            status_code=501,
+            status_code=200,
         )
 
     try:
@@ -920,7 +1003,7 @@ async def _handle_get_vpbx_info(request: Request, endpoint: str, _: BackgroundTa
                 "PROC": proc,
                 "SupportedPROC": ["VPBX", "CALLHUNT", "VPBXEXTENSIONS"],
             },
-            status_code=501,
+            status_code=200,
         )
     except Exception as exc:
         return _db_error(endpoint, exc)
@@ -3335,19 +3418,5 @@ async def vpbx_dispatch(endpoint_name: str, request: Request, background_tasks: 
     if handler:
         return await handler(request, endpoint, background_tasks)
 
-    source_file = ASP_SOURCE_DIR / endpoint
-    source_exists = 1 if source_file.exists() else 0
-    return _json_response(
-        {
-            "ResultID": -1,
-            "Error": "Endpoint not migrated yet",
-            "Endpoint": endpoint,
-            "SourceExists": source_exists,
-            "Method": request.method,
-            "Query": dict(request.query_params),
-            "MigrationCoverage": {
-                "MigratedEndpoints": sorted(MIGRATED_ENDPOINTS),
-            },
-        },
-        status_code=501,
-    )
+    generic_payload = _try_generic_proc_endpoint(endpoint, request)
+    return _json_response(generic_payload, status_code=200)
