@@ -3406,9 +3406,6 @@ async def vpbx_dispatch(endpoint_name: str, request: Request, background_tasks: 
     endpoint_l = endpoint.casefold()
 
     known_endpoints = _list_asp_endpoints()
-    if known_endpoints and endpoint not in known_endpoints:
-        return _json_response({"ResultID": -1, "Error": f"Unknown endpoint {endpoint}", "Endpoint": endpoint})
-
     if endpoint_l == "leg2connectedasync.asp":
         return await _handle_async_forward(request, "Leg2Connected.asp", background_tasks)
     if endpoint_l == "xxxhandlecrmasync.asp":
@@ -3417,6 +3414,11 @@ async def vpbx_dispatch(endpoint_name: str, request: Request, background_tasks: 
     handler = HANDLERS.get(endpoint_l)
     if handler:
         return await handler(request, endpoint, background_tasks)
+
+    if known_endpoints:
+        known_endpoint_l = {name.casefold() for name in known_endpoints}
+        if endpoint_l not in known_endpoint_l:
+            return _json_response({"ResultID": -1, "Error": f"Unknown endpoint {endpoint}", "Endpoint": endpoint})
 
     generic_payload = _try_generic_proc_endpoint(endpoint, request)
     return _json_response(generic_payload, status_code=200)
