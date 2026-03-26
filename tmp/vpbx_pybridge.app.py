@@ -2084,6 +2084,24 @@ async def _handle_provider_lookup_v3(request: Request, endpoint: str, _: Backgro
         payload["PConnectTimeout"] = 45
         return _json_response(payload)
     except Exception as exc:
+        # usp_GetProviderInfo may depend on TelcanSwitch on some environments.
+        # Return JSON fallback payload so callers do not receive hard 500 for DB state issues.
+        exc_text = str(exc)
+        if _looks_like_db_unavailable(exc_text):
+            return _json_response(
+                {
+                    "ResultID": -9,
+                    "Status": "degraded",
+                    "Endpoint": endpoint,
+                    "Error": "Provider info temporarily unavailable",
+                    "Message": "Required backend database is currently unavailable.",
+                    "ProviderID": provider_id,
+                    "ANI": ani,
+                    "TelNo": tel_no,
+                    "PConnectTimeout": 45,
+                },
+                status_code=200,
+            )
         return _db_error(endpoint, exc)
 
 
