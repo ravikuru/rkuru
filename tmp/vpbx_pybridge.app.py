@@ -75,6 +75,7 @@ MIGRATED_ENDPOINTS = {
     "getcallerid.asp",
     "getcallerid-dev.asp",
     "providerlookupv3.asp",
+    "getproviderinfo.asp",
     "getinboundlineinfov405.asp",
     "asterisklookupv2.asp",
     "getratesv301.asp",
@@ -2003,6 +2004,14 @@ async def _handle_provider_lookup_v3(request: Request, endpoint: str, _: Backgro
         return _db_error(endpoint, exc)
 
 
+async def _handle_get_provider_info(request: Request, endpoint: str, _: BackgroundTasks) -> JSONResponse:
+    """
+    Compatibility endpoint for legacy GetproviderInfo.asp.
+    Reuse ProviderLookupV3 behavior so existing clients can migrate without changes.
+    """
+    return await _handle_provider_lookup_v3(request, endpoint, _)
+
+
 def _is_tollfree_no(line_no: str) -> bool:
     digits = re.sub(r"[^0-9]", "", line_no or "")
     prefix = ""
@@ -3256,6 +3265,7 @@ HANDLERS: dict[str, Callable[[Request, str, BackgroundTasks], Awaitable[JSONResp
     "getcallerid-dev.asp": _handle_get_caller_id,
     "getcalleridv3.asp": _handle_get_caller_id_v3,
     "providerlookupv3.asp": _handle_provider_lookup_v3,
+    "getproviderinfo.asp": _handle_get_provider_info,
     "conferencelookup.asp": _handle_conference_lookup_main,
     "conferencelookup-dev.asp": _handle_conference_lookup_dev,
     "getinboundlineinfov403.asp": _handle_get_inbound_line_info_v403,
