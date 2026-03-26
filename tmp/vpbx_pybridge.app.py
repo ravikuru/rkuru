@@ -46,7 +46,7 @@ DB_KEY_TO_DATABASE = {
     "TelcanRecovery_DBS4": os.getenv("VPBX_DATABASE_TelcanRecovery_DBS4", "TelcanRecovery_DBS4"),
     "TelcanVoIP": os.getenv("VPBX_DATABASE_TelcanVoIP", "TelcanVoIP"),
 }
-AVAILABLE_ONLY_MODE = os.getenv("VPBX_AVAILABLE_ONLY_MODE", "1").strip().lower() in {"1", "true", "yes", "on"}
+AVAILABLE_ONLY_MODE = os.getenv("VPBX_AVAILABLE_ONLY_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 MIGRATED_ENDPOINTS = {
     "test.asp",
