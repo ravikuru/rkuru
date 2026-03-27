@@ -2039,6 +2039,52 @@ async def _handle_get_caller_id(request: Request, endpoint: str, _: BackgroundTa
         return _db_error(endpoint, exc)
 
 
+def _provider_ip_hint(provider_id: str, caller_server_ip: str) -> tuple[str, str]:
+    provider_ip = ""
+    provider_prefix = ""
+    ip_sql = (
+        "SELECT TOP 1 IPAddress, ISNULL(PrefixValue, '') AS PrefixValue "
+        "FROM ProviderIPs WHERE Inbound = 0 "
+        f"AND ProviderID = {_safe_sql_text(provider_id)} "
+        f"AND '{_safe_sql_text(caller_server_ip)}' LIKE Subnet"
+    )
+
+    for db_key in ("TelcanLCR", "TelcanSwitch", "TelcanAccounts"):
+        try:
+            ip_row = _fetch_one(ip_sql, db_key)
+            if ip_row:
+                provider_ip = str(ip_row.get("IPAddress") or "").strip()
+                provider_prefix = str(ip_row.get("PrefixValue") or "").strip()
+                if provider_ip or provider_prefix:
+                    break
+        except Exception:
+            continue
+    return provider_ip, provider_prefix
+
+
+def _provider_info_from_any_db(provider_id: str, ani: str, tel_no: str) -> tuple[dict[str, Any] | None, list[str]]:
+    proc_sql = (
+        "EXEC usp_GetProviderInfo "
+        f"@ProviderID={_safe_sql_text(provider_id)}, @ANI='{_safe_sql_text(ani)}', @RingToNumber='{_safe_sql_text(tel_no)}' "
+    )
+    attempts: list[str] = []
+    unavailable_errors: list[str] = []
+    for db_key in ("TelcanLCR", "TelcanSwitch", "TelcanAccounts"):
+        attempts.append(db_key)
+        try:
+            row = _fetch_one(proc_sql, db_key)
+            if row:
+                return row, attempts
+        except Exception as exc:
+            if _looks_like_db_unavailable(str(exc)):
+                unavailable_errors.append(f"{db_key}: {str(exc)[:180]}")
+                continue
+            raise
+    if unavailable_errors:
+        logger.warning("Provider lookup unavailable across DB keys: %s", " | ".join(unavailable_errors))
+    return None, attempts
+
+
 async def _handle_provider_lookup_v3(request: Request, endpoint: str, _: BackgroundTasks) -> JSONResponse:
     try:
         provider_id = _param(request, "ProviderID").strip()
@@ -2048,24 +2094,8 @@ async def _handle_provider_lookup_v3(request: Request, endpoint: str, _: Backgro
             return _json_response({"ResultID": -1, "Error": "ProviderID must be numeric"})
 
         caller_server_ip = (request.client.host if request.client else "") or ""
-        provider_ip = ""
-        provider_prefix = ""
-        ip_sql = (
-            "SELECT TOP 1 IPAddress, ISNULL(PrefixValue, '') AS PrefixValue "
-            "FROM ProviderIPs WHERE Inbound = 0 "
-            f"AND ProviderID = {_safe_sql_text(provider_id)} "
-            f"AND '{_safe_sql_text(caller_server_ip)}' LIKE Subnet"
-        )
-        ip_row = _fetch_one(ip_sql, "TelcanLCR")
-        if ip_row:
-            provider_ip = str(ip_row.get("IPAddress") or "").strip()
-            provider_prefix = str(ip_row.get("PrefixValue") or "").strip()
-
-        sql = (
-            "EXEC usp_GetProviderInfo "
-            f"@ProviderID={_safe_sql_text(provider_id)}, @ANI='{_safe_sql_text(ani)}', @RingToNumber='{_safe_sql_text(tel_no)}' "
-        )
-        row = _fetch_one(sql, "TelcanLCR")
+        provider_ip, provider_prefix = _provider_ip_hint(provider_id, caller_server_ip)
+        row, attempts = _provider_info_from_any_db(provider_id, ani, tel_no)
         payload: dict[str, Any] = {}
         if row:
             for k, v in row.items():
@@ -2081,6 +2111,17 @@ async def _handle_provider_lookup_v3(request: Request, endpoint: str, _: Backgro
                     payload["ProviderPrefix"] = provider_prefix or v
                 else:
                     payload[k] = v
+        else:
+            payload["ResultID"] = 0
+            payload["ProviderID"] = provider_id
+            payload["ANI"] = ani
+            payload["TelNo"] = tel_no
+            if attempts:
+                payload["TriedDBKeys"] = ",".join(attempts)
+            if provider_ip:
+                payload["IPAddress"] = provider_ip
+            if provider_prefix:
+                payload["ProviderPrefix"] = provider_prefix
         payload["PConnectTimeout"] = 45
         return _json_response(payload)
     except Exception as exc:
