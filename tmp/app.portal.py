@@ -700,6 +700,8 @@ def init_db() -> None:
                 direction TEXT NOT NULL,
                 did TEXT,
                 destination_number TEXT,
+                caller_id TEXT NOT NULL DEFAULT '',
+                fax_header TEXT NOT NULL DEFAULT '',
                 email TEXT,
                 gateway TEXT,
                 file_path TEXT,
@@ -893,6 +895,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE fax_routes ADD COLUMN last_result TEXT NOT NULL DEFAULT ''")
         if "last_attempt_at" not in fax_cols:
             conn.execute("ALTER TABLE fax_routes ADD COLUMN last_attempt_at TEXT NOT NULL DEFAULT ''")
+        if "caller_id" not in fax_cols:
+            conn.execute("ALTER TABLE fax_routes ADD COLUMN caller_id TEXT NOT NULL DEFAULT ''")
+        if "fax_header" not in fax_cols:
+            conn.execute("ALTER TABLE fax_routes ADD COLUMN fax_header TEXT NOT NULL DEFAULT ''")
         conference_cols = {row["name"] for row in conn.execute("PRAGMA table_info(conferences)").fetchall()}
         if "profile_mode" not in conference_cols:
             conn.execute("ALTER TABLE conferences ADD COLUMN profile_mode TEXT NOT NULL DEFAULT 'open'")
@@ -1648,21 +1654,56 @@ def sip_host_from_proxy(proxy: str) -> str:
     return no_scheme
 
 
-def build_fax_bgapi_originate(gateway: str, destination_number: str, fax_file: str, from_host: str) -> str:
+def sanitize_fax_caller_id(caller_id: str) -> str:
+    raw = (caller_id or "").strip()
+    if not raw:
+        raw = FAX_FIXED_FROM_NUMBER
+    cleaned = re.sub(r"[^0-9+]", "", raw)
+    if cleaned.startswith("+"):
+        plus_digits = "+" + re.sub(r"\D", "", cleaned[1:])
+        return plus_digits if plus_digits != "+" else FAX_FIXED_FROM_NUMBER
+    digits_only = re.sub(r"\D", "", cleaned)
+    return digits_only or FAX_FIXED_FROM_NUMBER
+
+
+def sanitize_fax_header(header: str) -> str:
+    raw = (header or "").strip()
+    if not raw:
+        return ""
+    # Keep fax header safe for channel variable serialization.
+    safe = re.sub(r"[\r\n\t]", " ", raw)
+    safe = safe.replace("{", "").replace("}", "").replace(",", " ")
+    safe = re.sub(r"\s+", " ", safe).strip()
+    return safe[:120]
+
+
+def build_fax_bgapi_originate(
+    gateway: str,
+    destination_number: str,
+    fax_file: str,
+    from_host: str,
+    caller_id: str = "",
+    fax_header: str = "",
+) -> str:
     safe_from_host = sip_host_from_proxy(from_host)
-    safe_display_name = FAX_FIXED_FROM_NAME.replace("'", "")
-    from_uri = f"sip:{FAX_FIXED_FROM_NUMBER}@{safe_from_host}" if safe_from_host else ""
+    safe_caller_id = sanitize_fax_caller_id(caller_id)
+    sip_user = re.sub(r"\D", "", safe_caller_id) or FAX_FIXED_FROM_NUMBER
+    safe_header = sanitize_fax_header(fax_header)
+    safe_display_name = (safe_header or FAX_FIXED_FROM_NAME).replace("'", "")
+    from_uri = f"sip:{sip_user}@{safe_from_host}" if safe_from_host else ""
     vars_block = (
         "{ignore_early_media=true,"
-        f"origination_caller_id_number={FAX_FIXED_FROM_NUMBER},"
+        f"origination_caller_id_number={safe_caller_id},"
         f"origination_caller_id_name='{safe_display_name}',"
-        f"effective_caller_id_number={FAX_FIXED_FROM_NUMBER},"
+        f"effective_caller_id_number={safe_caller_id},"
         f"effective_caller_id_name='{safe_display_name}',"
         f"sip_from_display='{safe_display_name}',"
-        f"sip_from_user={FAX_FIXED_FROM_NUMBER},"
-        f"sip_contact_user={FAX_FIXED_FROM_NUMBER}"
+        f"sip_from_user={sip_user},"
+        f"sip_contact_user={sip_user}"
         "}"
     )
+    if safe_header:
+        vars_block = vars_block[:-1] + f",fax_header='{safe_header}',fax_ident='{safe_header}'" + "}"
     if safe_from_host:
         vars_block = vars_block[:-1] + f",sip_from_host={safe_from_host}"
         if from_uri:
@@ -4135,6 +4176,8 @@ def fax_outbound_create(
     request: Request,
     destination_number: str = Form(...),
     gateway: str = Form(...),
+    caller_id: str = Form(""),
+    fax_header: str = Form(""),
     file_path: str = Form(""),
     file_upload: UploadFile | None = File(default=None),
 ):
@@ -4186,6 +4229,8 @@ def fax_outbound_create(
 
     with closing(db_conn()) as conn:
         trunk_name = gateway.strip()
+        effective_caller_id = sanitize_fax_caller_id(caller_id)
+        effective_fax_header = sanitize_fax_header(fax_header)
         trunk = conn.execute(
             "SELECT name, direction, outbound_prefix, proxy FROM trunks WHERE name = ? AND enabled = 1",
             (trunk_name,),
@@ -4231,12 +4276,19 @@ def fax_outbound_create(
         conn.execute(
             """
             INSERT INTO fax_routes(
-                direction, destination_number, gateway, file_path, enabled,
+                direction, destination_number, caller_id, fax_header, gateway, file_path, enabled,
                 send_status, failure_reason, last_result, last_attempt_at, created_at
             )
-            VALUES('outbound', ?, ?, ?, 1, 'pending', '', '', '', ?)
+            VALUES('outbound', ?, ?, ?, ?, ?, 1, 'pending', '', '', '', ?)
             """,
-            (destination_number.strip(), trunk_name, source_path, datetime.now(UTC).isoformat()),
+            (
+                destination_number.strip(),
+                effective_caller_id,
+                effective_fax_header,
+                trunk_name,
+                source_path,
+                datetime.now(UTC).isoformat(),
+            ),
         )
         fax_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         conn.commit()
@@ -4293,6 +4345,8 @@ def fax_outbound_create(
         fax_target_number,
         fax_file,
         str(trunk["proxy"] or ""),
+        str(row["caller_id"] or FAX_FIXED_FROM_NUMBER),
+        str(row["fax_header"] or ""),
     )
     result = fs_cli(cmd)
     status, reason = classify_fax_command_result(result)
@@ -4431,6 +4485,8 @@ def fax_outbound_send(
         fax_target_number,
         fax_file,
         str(trunk["proxy"] or ""),
+        str(row["caller_id"] or FAX_FIXED_FROM_NUMBER),
+        str(row["fax_header"] or ""),
     )
     result = fs_cli(cmd)
     status, reason = classify_fax_command_result(result)

@@ -18,6 +18,8 @@
     <h3>Outbound Fax Job</h3>
     <form method="post" action="/fax/outbound" class="grid-form" enctype="multipart/form-data">
       <label>Destination Number<input name="destination_number" required /></label>
+      <label>CallerID (optional)<input name="caller_id" placeholder="6472585272" /></label>
+      <label>Fax Header (optional)<input name="fax_header" maxlength="80" placeholder="Callture Fax" /></label>
       <label>Trunk
         <select name="gateway" required>
           {% for t in outbound_trunks %}
@@ -52,11 +54,13 @@
 <div class="card">
   <h3>Outbound Jobs</h3>
   <table>
-    <tr><th>ID</th><th>Destination</th><th>Trunk</th><th>File</th><th>Status</th><th>Action</th></tr>
+    <tr><th>ID</th><th>Destination</th><th>CallerID</th><th>Header</th><th>Trunk</th><th>File</th><th>Status</th><th>Action</th></tr>
     {% for r in outbound %}
     <tr>
       <td>{{ r.id }}</td>
       <td>{{ r.destination_number }}</td>
+      <td>{{ r.caller_id or "-" }}</td>
+      <td>{{ r.fax_header or "-" }}</td>
       <td>{{ r.gateway }}</td>
       <td>{{ r.file_path }}</td>
       <td>
