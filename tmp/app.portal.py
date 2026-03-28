@@ -1722,6 +1722,87 @@ def build_fax_bgapi_originate(
     )
 
 
+def build_fax_bgapi_originate_legacy(gateway: str, destination_number: str, fax_file: str, from_host: str) -> str:
+    """
+    Compatibility originate format kept for deployments that reject newer fax vars.
+    """
+    safe_from_host = sip_host_from_proxy(from_host)
+    safe_display_name = FAX_FIXED_FROM_NAME.replace("'", "")
+    from_uri = f"sip:{FAX_FIXED_FROM_NUMBER}@{safe_from_host}" if safe_from_host else ""
+    vars_block = (
+        "{ignore_early_media=true,"
+        f"origination_caller_id_number={FAX_FIXED_FROM_NUMBER},"
+        f"origination_caller_id_name='{safe_display_name}',"
+        f"effective_caller_id_number={FAX_FIXED_FROM_NUMBER},"
+        f"effective_caller_id_name='{safe_display_name}',"
+        f"sip_from_display='{safe_display_name}',"
+        f"sip_from_user={FAX_FIXED_FROM_NUMBER},"
+        f"sip_contact_user={FAX_FIXED_FROM_NUMBER}"
+        "}"
+    )
+    if safe_from_host:
+        vars_block = vars_block[:-1] + f",sip_from_host={safe_from_host}"
+        if from_uri:
+            vars_block += f",sip_from_uri={from_uri},sip_invite_from_uri={from_uri}"
+        vars_block += "}"
+    return (
+        "bgapi originate "
+        + vars_block
+        + "sofia/gateway/"
+        + gateway
+        + "/"
+        + destination_number
+        + " &txfax("
+        + fax_file
+        + ")"
+    )
+
+
+def send_fax_with_fallback(
+    gateway: str,
+    destination_number: str,
+    fax_file: str,
+    from_host: str,
+    caller_id: str,
+    fax_header: str,
+) -> tuple[str, str, str]:
+    """
+    Try the enhanced fax originate first; if it fails, retry legacy originate.
+    Returns: (result_text, status, reason)
+    """
+    primary_cmd = build_fax_bgapi_originate(
+        gateway,
+        destination_number,
+        fax_file,
+        from_host,
+        caller_id,
+        fax_header,
+    )
+    primary_result = fs_cli(primary_cmd)
+    primary_status, primary_reason = classify_fax_command_result(primary_result)
+    if primary_status == "success":
+        return primary_result, primary_status, primary_reason
+
+    legacy_cmd = build_fax_bgapi_originate_legacy(gateway, destination_number, fax_file, from_host)
+    legacy_result = fs_cli(legacy_cmd)
+    legacy_status, legacy_reason = classify_fax_command_result(legacy_result)
+    if legacy_status == "success":
+        combined = (
+            "Primary fax command failed; legacy fallback succeeded.\n"
+            f"Primary: {primary_result}\n"
+            f"Legacy: {legacy_result}"
+        )
+        return combined, legacy_status, legacy_reason
+
+    combined = (
+        "Primary fax command failed; legacy fallback also failed.\n"
+        f"Primary: {primary_result}\n"
+        f"Legacy: {legacy_result}"
+    )
+    final_reason = legacy_reason or primary_reason
+    return combined, "failed", final_reason
+
+
 def classify_fax_command_result(result: str) -> tuple[str, str]:
     text = (result or "").strip()
     if text and ("+OK" in text or "Job-UUID" in text):
@@ -4340,7 +4421,7 @@ def fax_outbound_create(
             },
         )
 
-    cmd = build_fax_bgapi_originate(
+    result, status, reason = send_fax_with_fallback(
         str(row["gateway"] or ""),
         fax_target_number,
         fax_file,
@@ -4348,8 +4429,6 @@ def fax_outbound_create(
         str(row["caller_id"] or FAX_FIXED_FROM_NUMBER),
         str(row["fax_header"] or ""),
     )
-    result = fs_cli(cmd)
-    status, reason = classify_fax_command_result(result)
     with closing(db_conn()) as conn:
         update_fax_send_status(
             conn,
@@ -4480,7 +4559,7 @@ def fax_outbound_send(
             },
         )
 
-    cmd = build_fax_bgapi_originate(
+    result, status, reason = send_fax_with_fallback(
         str(row["gateway"] or ""),
         fax_target_number,
         fax_file,
@@ -4488,8 +4567,6 @@ def fax_outbound_send(
         str(row["caller_id"] or FAX_FIXED_FROM_NUMBER),
         str(row["fax_header"] or ""),
     )
-    result = fs_cli(cmd)
-    status, reason = classify_fax_command_result(result)
     with closing(db_conn()) as conn:
         update_fax_send_status(
             conn,
